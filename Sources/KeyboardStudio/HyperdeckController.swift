@@ -1,4 +1,4 @@
-import AppKit
+@preconcurrency import AppKit
 import Combine
 import Foundation
 import KeyboardCore
@@ -127,7 +127,7 @@ final class HyperdeckController: ObservableObject {
         selectedRecipeID = loadedConfiguration.recipes.first?.id
     }
 
-    isolated deinit {
+    deinit {
         gestureDeadlineTask?.cancel()
         focusTickTask?.cancel()
         clipboardTask?.cancel()

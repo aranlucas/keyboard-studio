@@ -29,7 +29,7 @@ The native sidebar now provides:
 - **Text & Passwords:** 16 one-key text slots and opt-in password loading. Save writes only the selected slot. Passwords are excluded from backups unless explicitly included.
 - **Scripts:** both named script slots, the raw on-device VM image, and safe builders for tap, repeat-while-held, and LED scripts. Scripts execute on the keyboard; they do not run macOS shell commands.
 - **Device:** name, USB identity, firmware/model metadata, and advertised command set.
-- **Backup & Restore:** portable JSON backups of key maps, opaque bytes, lighting, palettes, text, scripts, and naming. Import is limited to 1 MiB and requires a connected keyboard with matching product, serial, model, button layout, and advertised capabilities. It stages changes for review; it does not immediately write them.
+- **Backup & Restore:** portable JSON backups of key maps, opaque bytes, lighting, palettes, text, scripts, and naming. Import is limited to 1 MiB and requires a connected keyboard with matching product, serial, model, firmware, button layout, and advertised capabilities. It stages changes for review; it does not immediately write them. Exported files are created with POSIX mode `0600`; backups containing password values still need private handling.
 
 Firmware update, recovery/bootloader, device lock, and factory reset are shown as detected maintenance capabilities but remain guarded. Keyboard Studio will not guess destructive command payloads or offer a firmware downgrade for model `0x0002`.
 
@@ -95,6 +95,8 @@ keyboardstudio://acknowledge-codex
 
 Recipe execution is deliberately not exposed through custom URLs: external apps cannot trigger a configured recipe without the user-authored hardware gesture or App Intent. The remaining URL actions are useful from Shortcuts, Raycast, scripts, calendar alarms, and other launchers without granting Accessibility access.
 
+The **Run Keyboard Studio Recipe** App Intent is a privileged, user-authored automation surface. Adding or invoking it from Shortcuts or Siri intentionally allows the selected recipe to launch its configured applications, URLs, Shortcuts, notifications, and compiled executables without an additional confirmation prompt. Treat the recipe and App Intent configuration as trusted local automation; custom URLs remain unable to run recipes.
+
 ## Device scripts
 
 The observed firmware advertises command `0xF0` for script bytecode and `0xF1` for its two script slots. Sayo's on-device VM can emit keyboard, mouse, and media input; use fixed or randomized delays; branch and loop; perform register, stack, arithmetic, and bitwise operations; switch layers; and control RGB. It cannot run macOS shell commands, AppleScript, Swift, or Python. Keyboard Studio can read, edit, write, and verify the bytecode image, and its templates always release keys and terminate. See the [official device script documentation](https://github.com/Sayobot/SayoDevice_manual/blob/main/docs/en/docs/std/web_hid/script.md).
@@ -118,6 +120,8 @@ codesign --verify --deep --strict --verbose=2 "dist/Keyboard Studio.app"
 ```
 
 `sayo-probe` is read-only unless an explicit `--set-*` or `--install-codex-deck` option is supplied. Its default mode prints the connected identity, firmware metadata, supported commands, and both button maps as JSON after Input Monitoring is granted. `--codex-status` does not open the keyboard; it reports the local active-task count and latest completion/interruption timestamps.
+
+CI scans the current tracked tree for common credential patterns without printing matched values. A full-history secret and personal-path scan remains a publication gate before making the repository public or shipping a release; this branch intentionally does not rewrite earlier history.
 
 ## Architecture
 

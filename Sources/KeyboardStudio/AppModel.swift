@@ -158,6 +158,7 @@ final class AppModel: ObservableObject {
     private static let acknowledgedTimestampKey = "codexDeckAcknowledgedAt"
     private static let runtimeAcknowledgedTimestampKey = "codexDeckRuntimeAcknowledgedAt"
     private static let statusLampEnabledKey = "codexStatusLampEnabled"
+    private static let maximumBackupBytes = 1_048_576
     private static let deckLogger = Logger(
         subsystem: "com.lucas.keyboardstudio",
         category: "CodexDeckInput"
@@ -271,22 +272,14 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let relauncher = Process()
-        relauncher.executableURL = URL(filePath: "/bin/sh")
-        relauncher.arguments = [
-            "-c",
-            "sleep 0.75; exec /usr/bin/open -n \"$KEYBOARD_STUDIO_APP\"",
-        ]
-        var environment = ProcessInfo.processInfo.environment
-        environment["KEYBOARD_STUDIO_APP"] = appURL.path
-        relauncher.environment = environment
-
-        do {
-            try relauncher.run()
-            NSApplication.shared.terminate(nil)
-        } catch {
-            deviceMessage = "Could not restart Keyboard Studio: \(error.localizedDescription)"
+        let appPath = appURL.path
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
+            let relauncher = Process()
+            relauncher.executableURL = URL(filePath: "/usr/bin/open")
+            relauncher.arguments = ["-n", appPath]
+            try? relauncher.run()
         }
+        NSApplication.shared.terminate(nil)
     }
 
     func saveDevice() async {
@@ -515,6 +508,10 @@ final class AppModel: ObservableObject {
     }
 
     func importBackup() {
+        guard let snapshot = deviceSnapshot else {
+            configurationMessage = "Connect the keyboard before importing a backup so its identity and capabilities can be checked."
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false
@@ -522,16 +519,8 @@ final class AppModel: ObservableObject {
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            let backup = try decoder.decode(SayoDeviceBackup.self, from: Data(contentsOf: url))
-            guard backup.format == "Keyboard Studio SayoDevice Backup 1.0" else {
-                throw SayoProtocolError.invalidPacket("unrecognized backup format")
-            }
-            if let currentModel = deviceSnapshot?.modelCode,
-               let backupModel = backup.modelCode,
-               currentModel != backupModel
-            {
-                throw SayoProtocolError.invalidPacket("backup model does not match the connected keyboard")
-            }
+            let backup = try decoder.decode(SayoDeviceBackup.self, from: Self.readBackupData(from: url))
+            try backup.validate(for: snapshot)
             editableButtons = backup.buttons
             var importedConfiguration = extendedDeviceConfiguration
             importedConfiguration.lighting = backup.lighting
@@ -543,6 +532,9 @@ final class AppModel: ObservableObject {
             if let passwords = backup.passwords {
                 importedConfiguration.passwordSlots = passwords
                 secretsAreLoaded = true
+            } else {
+                importedConfiguration.passwordSlots = []
+                secretsAreLoaded = false
             }
             importedConfiguration.message = "Backup imported and staged. Review each page, then use its Save button to apply."
             if extendedDeviceConfiguration != importedConfiguration {
@@ -551,6 +543,21 @@ final class AppModel: ObservableObject {
         } catch {
             configurationMessage = "Backup import failed: \(error.localizedDescription)"
         }
+    }
+
+    private static func readBackupData(from url: URL) throws -> Data {
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+        guard values.isRegularFile == true else {
+            throw SayoProtocolError.invalidBackup("backup must be a regular file")
+        }
+
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: maximumBackupBytes + 1) ?? Data()
+        guard data.count <= maximumBackupBytes else {
+            throw SayoProtocolError.invalidBackup("backup file is larger than 1 MiB")
+        }
+        return data
     }
 
     func installCodexDeck() async {

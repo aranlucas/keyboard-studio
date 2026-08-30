@@ -116,6 +116,9 @@ public actor SayoDeviceService {
     }
 
     public func readSnapshot(buttonCount: Int = 2) throws -> SayoDeviceSnapshot {
+        guard (1 ... 16).contains(buttonCount) else {
+            throw SayoProtocolError.invalidPacket("button count must be between one and sixteen")
+        }
         guard accessStatus() == .granted else {
             throw SayoDeviceServiceError.keyboardAccessRequired
         }
@@ -162,6 +165,9 @@ public actor SayoDeviceService {
     }
 
     public func writeAndSave(buttons: [SayoButtonConfiguration]) throws -> [SayoButtonConfiguration] {
+        guard !buttons.isEmpty, buttons.count <= 16 else {
+            throw SayoProtocolError.invalidPacket("button count must be between one and sixteen")
+        }
         var verified: [SayoButtonConfiguration] = []
         for button in buttons {
             let request = try button.writePacket()
@@ -227,6 +233,9 @@ public actor SayoDeviceService {
 
     @discardableResult
     public func writeIndexedRecord(command: UInt8, record: SayoIndexedRecord) throws -> SayoIndexedRecord {
+        guard record.values.count <= 57 else {
+            throw SayoProtocolError.invalidPacket("indexed record has more than 57 value bytes")
+        }
         let response = try transact(record.writePacket(command: command))
         let echoed = try SayoIndexedRecord.decode(response: response, requestCommand: command)
         guard echoed == record else {
@@ -335,11 +344,16 @@ public actor SayoDeviceService {
 
     @discardableResult
     public func writeRawScriptImage(_ image: [UInt8]) throws -> Int {
-        guard image.count <= 8192 else {
-            throw SayoProtocolError.invalidPacket("script image is larger than 8192 bytes")
+        guard image.count <= SayoDeviceBackup.maximumScriptImageBytes else {
+            throw SayoProtocolError.invalidPacket("script image is larger than \(SayoDeviceBackup.maximumScriptImageBytes) bytes")
         }
         var bytes = image
-        if bytes.last != 0xFF { bytes += [0xFF, 0xFF] }
+        if bytes.last != 0xFF {
+            guard bytes.count + 2 <= SayoDeviceBackup.maximumScriptImageBytes else {
+                throw SayoProtocolError.invalidPacket("script image leaves no room for the required terminator")
+            }
+            bytes += [0xFF, 0xFF]
+        }
         var address = 0
         while address < bytes.count {
             let count = min(54, bytes.count - address)
@@ -366,21 +380,26 @@ public actor SayoDeviceService {
     }
 
     public func readRawScriptImage(maximumBytes: Int = 8192) throws -> [UInt8] {
+        guard maximumBytes >= 0 else {
+            throw SayoProtocolError.invalidPacket("script image limit cannot be negative")
+        }
+        let boundedMaximum = min(maximumBytes, SayoDeviceBackup.maximumScriptImageBytes)
         var image: [UInt8] = []
         var address = 0
-        while address < maximumBytes {
+        while address < boundedMaximum {
             let response = try transact(SayoPacket(
                 command: 0xF0,
                 payload: [UInt8((address >> 8) & 0xFF), UInt8(address & 0xFF)]
             ))
             guard response.command == 0 else { break }
             guard !response.payload.isEmpty else { break }
-            image.append(contentsOf: response.payload)
-            address += response.payload.count
+            let chunk = Array(response.payload.prefix(boundedMaximum - address))
+            image.append(contentsOf: chunk)
+            address += chunk.count
             // A full vendor response carries 60 payload bytes. The firmware's
             // final short chunk is the end marker; do not probe one address
             // past it and turn normal discovery into a rejected command.
-            if response.payload.count < 60 { break }
+            if response.payload.count < 60 || chunk.count < response.payload.count { break }
         }
         while image.last == 0 { image.removeLast() }
         return image
@@ -472,14 +491,11 @@ public actor SayoDeviceService {
         guard length > 0 else {
             let message = decodeCString(error)
             Self.logger.error(
-                "HID transport failed command=\(Int(packet.command), privacy: .public): \(message, privacy: .public)"
+                "HID transport failed command=\(Int(packet.command), privacy: .public): \(message, privacy: .private)"
             )
             throw SayoDeviceServiceError.transport(message)
         }
         let responseBytes = Array(input.prefix(Int(length)))
-        let prefix = responseBytes.prefix(64)
-            .map { String(format: "%02X", $0) }
-            .joined(separator: " ")
         do {
             let response = try SayoPacket.decode(
                 responseBytes,
@@ -498,7 +514,7 @@ public actor SayoDeviceService {
             }
             return response
         } catch {
-            Self.logger.error("Could not decode HID response: \(error.localizedDescription, privacy: .public); raw=\(prefix, privacy: .public)")
+            Self.logger.error("Could not decode HID response: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }

@@ -5,6 +5,10 @@ project_root="$(cd "$(dirname "$0")/.." && pwd)"
 app_dir="$project_root/dist/Keyboard Studio.app"
 binary_path="$project_root/.build/release/KeyboardStudio"
 
+# This is a local development package. It is ad-hoc signed and currently
+# contains the host architecture (Apple Silicon on the supported build host).
+# Public distribution needs a Developer ID release script with notarization.
+rm -rf "$project_root/dist"
 swift build --package-path "$project_root" -c release --product KeyboardStudio
 
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"

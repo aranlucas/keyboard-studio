@@ -60,6 +60,116 @@ struct SayoPacketTests {
         let decoded = try SayoPacket.decode(encoded, checksumValidation: .opaqueFirmwareResponseTrailer)
         #expect(decoded == packet)
     }
+
+    @Test
+    func buttonWriteRejectsNumbersOutsideTheWireRange() {
+        let layer = SayoKeyLayer(id: 0, keyCodes: [0x04, 0, 0])
+        let negative = SayoButtonConfiguration(
+            number: -1,
+            header: [UInt8](repeating: 0, count: 16),
+            layers: [layer],
+            usesModernKeyMap: true
+        )
+        let oversized = SayoButtonConfiguration(
+            number: 256,
+            header: [UInt8](repeating: 0, count: 16),
+            layers: [layer],
+            usesModernKeyMap: true
+        )
+
+        #expect(
+            thrownSayoError { try negative.writePacket() }
+                == .invalidPacket("button number is outside the UInt8 range")
+        )
+        #expect(
+            thrownSayoError { try oversized.writePacket() }
+                == .invalidPacket("button number is outside the UInt8 range")
+        )
+    }
+
+    @Test
+    func indexedRecordWriteRejectsValuesOutsideTheWireRange() {
+        let oversized = SayoIndexedRecord(number: 0, mode: 0, values: [UInt8](repeating: 0, count: 58))
+
+        #expect(
+            thrownSayoError { try oversized.writePacket(command: 0x0C) }
+                == .invalidPacket("indexed record has more than 57 value bytes")
+        )
+    }
+}
+
+struct SayoBackupValidationTests {
+    private let buttons = [
+        SayoButtonConfiguration(
+            number: 0,
+            header: [UInt8](repeating: 0, count: 16),
+            layers: [SayoKeyLayer(id: 0, keyCodes: [0x04, 0, 0])],
+            usesModernKeyMap: true
+        ),
+        SayoButtonConfiguration(
+            number: 1,
+            header: [UInt8](repeating: 0, count: 16),
+            layers: [SayoKeyLayer(id: 0, keyCodes: [0x05, 0, 0])],
+            usesModernKeyMap: true
+        ),
+    ]
+
+    private var snapshot: SayoDeviceSnapshot {
+        SayoDeviceSnapshot(
+            product: "SayoDevice O2L V2",
+            manufacturer: "SayoDevice",
+            serialNumber: "test-device",
+            vendorID: SayoDeviceService.vendorID,
+            productID: SayoDeviceService.productID,
+            locationID: 0,
+            modelCode: 2,
+            supportedCommands: [],
+            buttons: buttons
+        )
+    }
+
+    private var backup: SayoDeviceBackup {
+        SayoDeviceBackup(
+            product: "SayoDevice O2L V2",
+            serialNumber: "test-device",
+            modelCode: 2,
+            firmwareVersion: 1,
+            buttons: buttons,
+            lighting: [],
+            colorTables: [],
+            scriptNames: [],
+            scriptImage: [],
+            deviceName: "",
+            strings: []
+        )
+    }
+
+    @Test
+    func matchingBackupPassesIdentityAndCapabilityValidation() throws {
+        try backup.validate(for: snapshot)
+    }
+
+    @Test
+    func backupRejectsDataForUnsupportedCommands() {
+        var invalid = backup
+        invalid.scriptImage = [0x11, 0x04, 0xFF]
+
+        #expect(
+            thrownSayoError { try invalid.validate(for: snapshot) }
+                == .invalidBackup("backup contains script bytecode unsupported by this keyboard")
+        )
+    }
+
+    @Test
+    func backupRejectsDifferentPhysicalDevice() {
+        var invalid = backup
+        invalid.serialNumber = "another-device"
+
+        #expect(
+            thrownSayoError { try invalid.validate(for: snapshot) }
+                == .invalidBackup("backup serial number does not match the connected keyboard")
+        )
+    }
 }
 
 struct HyperdeckGestureRecognizerTests {

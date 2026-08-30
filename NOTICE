@@ -1,0 +1,16 @@
+Keyboard Studio
+
+Copyright (c) 2026 Lucas Arango
+
+This project is an independent macOS implementation for SayoDevice hardware.
+It references public SayoDevice documentation and the Sayobot Sayo_CLI project
+for protocol interoperability research. No Sayobot source code or runtime
+dependency is included in this repository.
+
+Upstream references:
+
+* Sayobot Sayo_CLI: https://github.com/Sayobot/Sayo_CLI
+* SayoDevice manual: https://github.com/Sayobot/SayoDevice_manual
+
+Those upstream projects retain their own licenses and notices. Consult the
+upstream repositories before redistributing any of their material.

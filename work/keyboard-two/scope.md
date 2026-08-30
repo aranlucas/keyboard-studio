@@ -4,7 +4,7 @@
 - case_id: keyboard-two
 - created: 2026-08-29T15:58:38-07:00
 - operator: local
-- project_root: /Users/lucas/Projects/keyboard
+- project_root: local checkout (redacted for publication)
 - primary_skill: protocol-reverse/SKILL.md
 - primary_id: R21
 - lead_role: lead

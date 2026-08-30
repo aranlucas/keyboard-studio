@@ -388,7 +388,7 @@ private struct HyperdeckRecipeEditor: View {
                 }
                 .textFieldStyle(.roundedBorder)
 
-                Text("Steps run from top to bottom. Executables must be explicit absolute paths and are launched directly—never through a shell.")
+                Text("Steps run from top to bottom. Executables must be explicit absolute paths, compiled binaries only, and are launched directly—never through an interpreter or shell.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 

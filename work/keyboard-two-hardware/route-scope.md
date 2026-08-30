@@ -6,7 +6,7 @@
 - primary_label: General reverse-engineering
 - primary_skill: skills/reverse-engineering/SKILL.md
 - confidence: low
-- project_root: /Users/lucas/Projects/keyboard
+- project_root: local checkout (redacted for publication)
 - secondary: (none)
 
 ## MUST open next

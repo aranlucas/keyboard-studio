@@ -16,8 +16,8 @@ A native SwiftUI configurator was built around the recovered protocol. Version 0
 | Product | SayoDevice O2L V2 |
 | Vendor ID | `0x8089` (32905) |
 | Product ID | `0x000C` (12) |
-| Serial | `03CDAB61C676BCA42EFFFFFFFF00` |
-| USB location | `0x20110000` |
+| Serial | redacted for publication |
+| USB location | redacted for publication |
 | Vendor collection | usage page `0xFF00`, usage `0x01` |
 | Configuration report | ID `0x02`, 63-byte payload area, 64 bytes including report ID |
 | Alternate vendor collection | usage page `0xFF11`, usage `0x02`, report ID `0x21` |

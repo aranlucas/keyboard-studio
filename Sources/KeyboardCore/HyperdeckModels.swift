@@ -289,7 +289,7 @@ public enum HyperdeckActionKind: String, Codable, CaseIterable, Identifiable, Se
         case .copyText: "Copy text"
         case .showNotification: "Show notification"
         case .setRGB: "Set keyboard RGB"
-        case .runExecutable: "Run approved executable"
+        case .runExecutable: "Run configured executable"
         case .openCodex: "Open Codex"
         case .acknowledgeCodex: "Acknowledge Codex"
         case .nextCodexReview: "Next Codex review"

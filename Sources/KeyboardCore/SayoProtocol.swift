@@ -2,6 +2,7 @@ import Foundation
 
 public enum SayoProtocolError: Error, LocalizedError, Equatable {
     case invalidPacket(String)
+    case invalidBackup(String)
     case deviceRejected(command: UInt8, code: UInt8)
     case unsupportedConfiguration
 
@@ -9,6 +10,8 @@ public enum SayoProtocolError: Error, LocalizedError, Equatable {
         switch self {
         case let .invalidPacket(reason):
             "Invalid SayoDevice packet: \(reason)"
+        case let .invalidBackup(reason):
+            "Invalid Keyboard Studio backup: \(reason)"
         case let .deviceRejected(command, code):
             "The keyboard rejected command \(command) with code \(code)."
         case .unsupportedConfiguration:
@@ -165,18 +168,32 @@ public struct SayoButtonConfiguration: Equatable, Codable, Sendable, Identifiabl
         guard !layers.isEmpty else {
             throw SayoProtocolError.invalidPacket("button has no layers")
         }
+        guard let encodedNumber = UInt8(exactly: number) else {
+            throw SayoProtocolError.invalidPacket("button number is outside the UInt8 range")
+        }
+        let maximumLayerCount = usesModernKeyMap ? 5 : 1
+        guard layers.count <= maximumLayerCount else {
+            throw SayoProtocolError.invalidPacket("button has more than \(maximumLayerCount) layers")
+        }
+        let maximumHeaderLength = usesModernKeyMap ? 16 : 4
+        guard header.count <= maximumHeaderLength else {
+            throw SayoProtocolError.invalidPacket("button header is too long")
+        }
+        guard layers.allSatisfy({ $0.keyCodes.count <= 3 }) else {
+            throw SayoProtocolError.invalidPacket("button layer has more than three key codes")
+        }
 
         if usesModernKeyMap {
             var mutableHeader = Array((header + [UInt8](repeating: 0, count: 16)).prefix(16))
             mutableHeader[0] = 1
-            mutableHeader[1] = UInt8(number)
+            mutableHeader[1] = encodedNumber
             return SayoPacket(command: 22, payload: mutableHeader + layers.prefix(5).flatMap(\.bytes))
         }
 
         let layer = layers[0]
         return SayoPacket(
             command: 6,
-            payload: [1, UInt8(number), layer.mode, 0, layer.modifier] + layer.keyCodes
+            payload: [1, encodedNumber, layer.mode, 0, layer.modifier] + layer.keyCodes
         )
     }
 }
@@ -248,6 +265,9 @@ public struct SayoIndexedRecord: Equatable, Codable, Sendable, Identifiable {
         guard let encodedNumber = UInt8(exactly: number) else {
             throw SayoProtocolError.invalidPacket("indexed record number is outside the UInt8 range")
         }
+        guard values.count <= 57 else {
+            throw SayoProtocolError.invalidPacket("indexed record has more than 57 value bytes")
+        }
         return SayoPacket(command: command, payload: [1, encodedNumber, mode] + values)
     }
 }
@@ -276,6 +296,9 @@ public struct SayoDeviceIdentityConfiguration: Equatable, Codable, Sendable {
 }
 
 public struct SayoDeviceBackup: Equatable, Codable, Sendable {
+    public static let formatIdentifier = "Keyboard Studio SayoDevice Backup 1.0"
+    public static let maximumScriptImageBytes = 8192
+
     public var format: String
     public var createdAt: Date
     public var product: String
@@ -306,7 +329,7 @@ public struct SayoDeviceBackup: Equatable, Codable, Sendable {
         passwords: [SayoNamedSlot]? = nil,
         strings: [SayoIndexedRecord] = []
     ) {
-        format = "Keyboard Studio SayoDevice Backup 1.0"
+        format = Self.formatIdentifier
         self.createdAt = createdAt
         self.product = product
         self.serialNumber = serialNumber
@@ -320,6 +343,154 @@ public struct SayoDeviceBackup: Equatable, Codable, Sendable {
         self.deviceName = deviceName
         self.passwords = passwords
         self.strings = strings
+    }
+
+    public func validate(for snapshot: SayoDeviceSnapshot) throws {
+        guard format == Self.formatIdentifier else {
+            throw SayoProtocolError.invalidBackup("unrecognized backup format")
+        }
+        guard product == snapshot.product else {
+            throw SayoProtocolError.invalidBackup("backup product does not match the connected keyboard")
+        }
+        guard serialNumber == snapshot.serialNumber else {
+            throw SayoProtocolError.invalidBackup("backup serial number does not match the connected keyboard")
+        }
+        guard modelCode == snapshot.modelCode else {
+            throw SayoProtocolError.invalidBackup("backup model does not match the connected keyboard")
+        }
+        guard buttons.count == snapshot.buttons.count else {
+            throw SayoProtocolError.invalidBackup("backup button count does not match the connected keyboard")
+        }
+
+        for (index, button) in buttons.enumerated() {
+            let current = snapshot.buttons[index]
+            guard button.number == current.number,
+                  button.usesModernKeyMap == current.usesModernKeyMap,
+                  button.layers.count == current.layers.count,
+                  button.header.count == current.header.count,
+                  button.layers.allSatisfy({ $0.keyCodes.count <= 3 })
+            else {
+                throw SayoProtocolError.invalidBackup("button \(index + 1) shape does not match the connected keyboard")
+            }
+            _ = try button.writePacket()
+            for (layer, currentLayer) in zip(button.layers, current.layers) {
+                guard layer.id == currentLayer.id,
+                      layer.keyCodes.count == currentLayer.keyCodes.count
+                else {
+                    throw SayoProtocolError.invalidBackup("button \(index + 1) contains an invalid layer shape")
+                }
+            }
+        }
+
+        let supportedCommands = Set(snapshot.supportedCommands)
+        try validateLighting(supportedCommands: supportedCommands)
+        try validateIndexedRecords(
+            colorTables,
+            name: "color table",
+            command: 0x11,
+            supportedCommands: supportedCommands,
+            expectedCount: supportedCommands.contains(0x11) ? 6 : 0
+        )
+        try validateNamedSlots(
+            scriptNames,
+            name: "script",
+            command: 0xF1,
+            supportedCommands: supportedCommands,
+            expectedCount: supportedCommands.contains(0xF1) ? 2 : 0,
+            maximumNameBytes: 32,
+            maximumSlots: 64
+        )
+        guard scriptImage.count <= Self.maximumScriptImageBytes else {
+            throw SayoProtocolError.invalidBackup("script image is larger than \(Self.maximumScriptImageBytes) bytes")
+        }
+        guard scriptImage.isEmpty || supportedCommands.contains(0xF0) else {
+            throw SayoProtocolError.invalidBackup("backup contains script bytecode unsupported by this keyboard")
+        }
+        try validateNamedSlots(
+            passwords ?? [],
+            name: "password",
+            command: 0x0B,
+            supportedCommands: supportedCommands,
+            expectedCount: nil,
+            maximumNameBytes: 57,
+            maximumSlots: 128
+        )
+        if passwords != nil, !supportedCommands.contains(0x0B) {
+            throw SayoProtocolError.invalidBackup("backup contains password slots unsupported by this keyboard")
+        }
+        try validateIndexedRecords(
+            strings,
+            name: "text",
+            command: 0x0C,
+            supportedCommands: supportedCommands,
+            expectedCount: supportedCommands.contains(0x0C) ? 16 : 0
+        )
+        guard deviceName.utf16.count <= 15 else {
+            throw SayoProtocolError.invalidBackup("device name is longer than 15 UTF-16 code units")
+        }
+        guard deviceName.isEmpty || supportedCommands.contains(0x08) else {
+            throw SayoProtocolError.invalidBackup("backup contains a device name unsupported by this keyboard")
+        }
+    }
+
+    private func validateLighting(supportedCommands: Set<UInt8>) throws {
+        let expectedCount = supportedCommands.contains(0x10) ? 2 : 0
+        guard lighting.count == expectedCount else {
+            throw SayoProtocolError.invalidBackup("lighting record count does not match keyboard capabilities")
+        }
+        for (index, record) in lighting.enumerated() {
+            guard record.number == index, (9 ... 57).contains(record.values.count) else {
+                throw SayoProtocolError.invalidBackup("lighting record \(index + 1) has an invalid shape")
+            }
+        }
+    }
+
+    private func validateIndexedRecords(
+        _ records: [SayoIndexedRecord],
+        name: String,
+        command: UInt8,
+        supportedCommands: Set<UInt8>,
+        expectedCount: Int
+    ) throws {
+        guard records.count == expectedCount else {
+            throw SayoProtocolError.invalidBackup("\(name) record count does not match keyboard capabilities")
+        }
+        guard records.allSatisfy({ $0.values.count <= 57 }) else {
+            throw SayoProtocolError.invalidBackup("a \(name) record is too large")
+        }
+        guard records.enumerated().allSatisfy({ $0.element.number == $0.offset }) else {
+            throw SayoProtocolError.invalidBackup("\(name) record numbers are not sequential")
+        }
+        if !records.isEmpty, !supportedCommands.contains(command) {
+            throw SayoProtocolError.invalidBackup("backup contains \(name) records unsupported by this keyboard")
+        }
+    }
+
+    private func validateNamedSlots(
+        _ slots: [SayoNamedSlot],
+        name: String,
+        command: UInt8,
+        supportedCommands: Set<UInt8>,
+        expectedCount: Int?,
+        maximumNameBytes: Int,
+        maximumSlots: Int
+    ) throws {
+        if let expectedCount, slots.count != expectedCount {
+            throw SayoProtocolError.invalidBackup("\(name) slot count does not match keyboard capabilities")
+        }
+        guard slots.count <= maximumSlots else {
+            throw SayoProtocolError.invalidBackup("too many \(name) slots")
+        }
+        guard slots.enumerated().allSatisfy({ index, slot in
+            slot.number == index
+                && slot.name.utf8.count <= maximumNameBytes
+                && slot.rawName.count <= maximumNameBytes + (name == "password" ? 1 : 0)
+        }) else {
+            throw SayoProtocolError.invalidBackup("a \(name) slot has an invalid shape")
+        }
+        if !slots.isEmpty, !supportedCommands.contains(command) {
+            throw SayoProtocolError.invalidBackup("backup contains \(name) slots unsupported by this keyboard")
+        }
     }
 }
 

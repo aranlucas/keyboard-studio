@@ -44,5 +44,9 @@ let package = Package(
             name: "ProtocolCheck",
             dependencies: ["KeyboardCore"]
         ),
+        .testTarget(
+            name: "KeyboardCoreTests",
+            dependencies: ["KeyboardCore"]
+        ),
     ]
 )

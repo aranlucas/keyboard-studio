@@ -11,13 +11,18 @@ permissions:
 
 jobs:
   test:
-    runs-on: macos-14
+    # macos-14 defaults to Xcode 15/Swift 5.10; the package requires Swift 6.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Check for accidental secrets
         run: |
-          if git grep -n -I -E 'BEGIN (RSA|OPENSSH|EC|PGP) PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}'; then
-            echo "Potential credential material is tracked in the repository."
+          secret_pattern='BEGIN (RSA|OPENSSH|EC|PGP) PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|(cfp_|cf_)[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9_-]{20,}|(CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{20,}|NPM_TOKEN[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{20,}'
+          if matches=$(git grep -l -I -E "$secret_pattern"); then
+            echo "Potential credential material is tracked in:"
+            echo "$matches"
             exit 1
           fi
       - name: Check formatting and package graph

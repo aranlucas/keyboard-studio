@@ -11,6 +11,17 @@ private func thrownSayoError(_ operation: () throws -> Any) -> SayoProtocolError
     }
 }
 
+private func serviceThrowsDeviceSelectionRequired(_ operation: () async throws -> Any) async -> Bool {
+    do {
+        _ = try await operation()
+        return false
+    } catch {
+        guard let error = error as? SayoDeviceServiceError else { return false }
+        if case .deviceSelectionRequired = error { return true }
+        return false
+    }
+}
+
 struct SayoPacketTests {
     @Test
     func encodeDecodeRoundTripUsesAdditiveChecksum() throws {
@@ -122,6 +133,7 @@ struct SayoBackupValidationTests {
             vendorID: SayoDeviceService.vendorID,
             productID: SayoDeviceService.productID,
             locationID: 0,
+            firmwareVersion: 1,
             modelCode: 2,
             supportedCommands: [],
             buttons: buttons
@@ -168,6 +180,28 @@ struct SayoBackupValidationTests {
         #expect(
             thrownSayoError { try invalid.validate(for: snapshot) }
                 == .invalidBackup("backup serial number does not match the connected keyboard")
+        )
+    }
+
+    @Test
+    func backupRejectsDifferentFirmware() {
+        var invalid = backup
+        invalid.firmwareVersion = 2
+
+        #expect(
+            thrownSayoError { try invalid.validate(for: snapshot) }
+                == .invalidBackup("backup firmware does not match the connected keyboard")
+        )
+    }
+}
+
+struct SayoDeviceSelectionTests {
+    @Test
+    func destructiveWritesRequireAnExplicitSnapshotSelection() async {
+        let service = SayoDeviceService()
+
+        #expect(
+            await serviceThrowsDeviceSelectionRequired { try await service.saveToFlash() }
         )
     }
 }

@@ -358,6 +358,9 @@ public struct SayoDeviceBackup: Equatable, Codable, Sendable {
         guard modelCode == snapshot.modelCode else {
             throw SayoProtocolError.invalidBackup("backup model does not match the connected keyboard")
         }
+        guard firmwareVersion == snapshot.firmwareVersion else {
+            throw SayoProtocolError.invalidBackup("backup firmware does not match the connected keyboard")
+        }
         guard buttons.count == snapshot.buttons.count else {
             throw SayoProtocolError.invalidBackup("backup button count does not match the connected keyboard")
         }

@@ -4,7 +4,7 @@ import Foundation
 import KeyboardCore
 import OSLog
 import UniformTypeIdentifiers
-import UserNotifications
+@preconcurrency import UserNotifications
 
 struct CodexDeckPress: Identifiable {
     let id = UUID()
@@ -236,11 +236,14 @@ final class AppModel: ObservableObject {
         let isPresent = await deviceService.isPresent()
         if isPresent {
             if deviceSnapshot == nil {
-                await refreshDevice()
+                deviceMessage = "A keyboard is present. Press Refresh to select it and load its configuration."
             }
-        } else if deviceSnapshot != nil {
-            deviceSnapshot = nil
-            deviceMessage = "The second keyboard was disconnected."
+        } else {
+            await deviceService.clearSelection()
+            if deviceSnapshot != nil {
+                deviceSnapshot = nil
+                deviceMessage = "The second keyboard was disconnected."
+            }
         }
     }
 
@@ -272,14 +275,20 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let appPath = appURL.path
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
-            let relauncher = Process()
-            relauncher.executableURL = URL(filePath: "/usr/bin/open")
-            relauncher.arguments = ["-n", appPath]
-            try? relauncher.run()
+        let relauncher = Process()
+        relauncher.executableURL = URL(filePath: "/usr/bin/open")
+        relauncher.arguments = ["-n", appURL.path]
+        do {
+            try relauncher.run()
+            relauncher.waitUntilExit()
+            guard relauncher.terminationStatus == 0 else {
+                deviceMessage = "Could not restart Keyboard Studio: /usr/bin/open failed."
+                return
+            }
+            NSApplication.shared.terminate(nil)
+        } catch {
+            deviceMessage = "Could not restart Keyboard Studio: \(error.localizedDescription)"
         }
-        NSApplication.shared.terminate(nil)
     }
 
     func saveDevice() async {
@@ -499,6 +508,10 @@ final class AppModel: ObservableObject {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
             try encoder.encode(backup).write(to: url, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o600))],
+                ofItemAtPath: url.path
+            )
             configurationMessage = includeSecretsInBackup && secretsAreLoaded
                 ? "Backup exported with password slots. Keep the file private."
                 : "Backup exported without password values."

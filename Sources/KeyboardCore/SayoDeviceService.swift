@@ -5,6 +5,7 @@ import OSLog
 public enum SayoDeviceServiceError: Error, LocalizedError, Sendable {
     case transport(String)
     case keyboardAccessRequired
+    case deviceSelectionRequired
     case malformedCString
 
     public var errorDescription: String? {
@@ -12,6 +13,8 @@ public enum SayoDeviceServiceError: Error, LocalizedError, Sendable {
         case let .transport(message): message
         case .keyboardAccessRequired:
             "Keyboard access is required. Grant Input Monitoring, then quit and reopen Keyboard Studio."
+        case .deviceSelectionRequired:
+            "Refresh the keyboard before reading or writing device settings."
         case .malformedCString: "The HID device returned malformed identity text."
         }
     }
@@ -101,6 +104,8 @@ public actor SayoDeviceService {
     public static let usagePage: UInt32 = 0xFF00
     public static let usage: UInt32 = 0x0001
 
+    private var selectedDevice: DeviceIdentity?
+
     public init() {}
 
     public func accessStatus() -> SayoKeyboardAccessStatus {
@@ -115,15 +120,25 @@ public actor SayoDeviceService {
         (try? findDevice()) != nil
     }
 
+    /// Drops the device selected by the last successful snapshot refresh.
+    /// A later explicit refresh is required to select another physical device.
+    public func clearSelection() {
+        selectedDevice = nil
+    }
+
     public func readSnapshot(buttonCount: Int = 2) throws -> SayoDeviceSnapshot {
         guard (1 ... 16).contains(buttonCount) else {
             throw SayoProtocolError.invalidPacket("button count must be between one and sixteen")
         }
+        selectedDevice = nil
         guard accessStatus() == .granted else {
             throw SayoDeviceServiceError.keyboardAccessRequired
         }
         let identity = try findDevice()
-        let initResponse = try transact(makeInitPacket())
+        guard !identity.serialNumber.isEmpty else {
+            throw SayoDeviceServiceError.deviceSelectionRequired
+        }
+        let initResponse = try transact(makeInitPacket(), boundTo: identity)
         guard initResponse.command == 0 else {
             throw SayoProtocolError.deviceRejected(command: 0, code: initResponse.command)
         }
@@ -142,15 +157,15 @@ public actor SayoDeviceService {
         var buttons: [SayoButtonConfiguration] = []
         for number in 0 ..< buttonCount {
             if shouldUseModernMap,
-               let modern = try? readModernButton(number: number)
+               let modern = try? readModernButton(number: number, boundTo: identity)
             {
                 buttons.append(modern)
             } else {
-                buttons.append(try readLegacyButton(number: number))
+                buttons.append(try readLegacyButton(number: number, boundTo: identity))
             }
         }
 
-        return SayoDeviceSnapshot(
+        let snapshot = SayoDeviceSnapshot(
             product: identity.product,
             manufacturer: identity.manufacturer,
             serialNumber: identity.serialNumber,
@@ -162,9 +177,12 @@ public actor SayoDeviceService {
             supportedCommands: supportedCommands,
             buttons: buttons
         )
+        selectedDevice = identity
+        return snapshot
     }
 
     public func writeAndSave(buttons: [SayoButtonConfiguration]) throws -> [SayoButtonConfiguration] {
+        _ = try requireSelectedDevice()
         guard !buttons.isEmpty, buttons.count <= 16 else {
             throw SayoProtocolError.invalidPacket("button count must be between one and sixteen")
         }
@@ -198,6 +216,7 @@ public actor SayoDeviceService {
     }
 
     public func setStaticLighting(number: Int, red: UInt8, green: UInt8, blue: UInt8) throws {
+        _ = try requireSelectedDevice()
         guard let lightingNumber = UInt8(exactly: number) else {
             throw SayoProtocolError.invalidPacket("Lighting v2 number is outside the UInt8 range")
         }
@@ -233,6 +252,7 @@ public actor SayoDeviceService {
 
     @discardableResult
     public func writeIndexedRecord(command: UInt8, record: SayoIndexedRecord) throws -> SayoIndexedRecord {
+        _ = try requireSelectedDevice()
         guard record.values.count <= 57 else {
             throw SayoProtocolError.invalidPacket("indexed record has more than 57 value bytes")
         }
@@ -255,6 +275,7 @@ public actor SayoDeviceService {
 
     @discardableResult
     public func writeDeviceName(_ name: String) throws -> String {
+        _ = try requireSelectedDevice()
         let units = Array(name.utf16.prefix(15))
         var encoded: [UInt8] = []
         for unit in units {
@@ -304,6 +325,7 @@ public actor SayoDeviceService {
 
     @discardableResult
     public func writeNamedSlot(command: UInt8, slot: SayoNamedSlot) throws -> SayoNamedSlot {
+        _ = try requireSelectedDevice()
         guard let number = UInt8(exactly: slot.number) else {
             throw SayoProtocolError.invalidPacket("named-slot number is outside the UInt8 range")
         }
@@ -330,6 +352,7 @@ public actor SayoDeviceService {
 
     @discardableResult
     public func writePasswordSlot(_ slot: SayoNamedSlot) throws -> SayoNamedSlot {
+        _ = try requireSelectedDevice()
         guard let number = UInt8(exactly: slot.number) else {
             throw SayoProtocolError.invalidPacket("password-slot number is outside the UInt8 range")
         }
@@ -344,6 +367,7 @@ public actor SayoDeviceService {
 
     @discardableResult
     public func writeRawScriptImage(_ image: [UInt8]) throws -> Int {
+        _ = try requireSelectedDevice()
         guard image.count <= SayoDeviceBackup.maximumScriptImageBytes else {
             throw SayoProtocolError.invalidPacket("script image is larger than \(SayoDeviceBackup.maximumScriptImageBytes) bytes")
         }
@@ -373,6 +397,7 @@ public actor SayoDeviceService {
     }
 
     public func saveToFlash() throws {
+        _ = try requireSelectedDevice()
         let response = try transact(SayoPacket(command: 4, payload: [0x72, 0x96]))
         guard response.command == 0 else {
             throw SayoProtocolError.deviceRejected(command: 4, code: response.command)
@@ -409,6 +434,7 @@ public actor SayoDeviceService {
     public func writeLightingV2(
         _ configuration: SayoLightingV2Configuration
     ) throws -> SayoLightingV2Configuration {
+        _ = try requireSelectedDevice()
         let payload = [1, configuration.number, configuration.mode] + configuration.values
         let response = try transact(SayoPacket(command: 0x10, payload: payload))
         guard response.command == 0 else {
@@ -421,13 +447,13 @@ public actor SayoDeviceService {
         return echoed
     }
 
-    private func readModernButton(number: Int) throws -> SayoButtonConfiguration {
-        let response = try transact(SayoPacket(command: 22, payload: [0, UInt8(number)]))
+    private func readModernButton(number: Int, boundTo identity: DeviceIdentity? = nil) throws -> SayoButtonConfiguration {
+        let response = try transact(SayoPacket(command: 22, payload: [0, UInt8(number)]), boundTo: identity)
         return try SayoButtonConfiguration.decodeModern(response: response)
     }
 
-    private func readLegacyButton(number: Int) throws -> SayoButtonConfiguration {
-        let response = try transact(SayoPacket(command: 6, payload: [0, UInt8(number)]))
+    private func readLegacyButton(number: Int, boundTo identity: DeviceIdentity? = nil) throws -> SayoButtonConfiguration {
+        let response = try transact(SayoPacket(command: 6, payload: [0, UInt8(number)]), boundTo: identity)
         return try SayoButtonConfiguration.decodeLegacy(response: response)
     }
 
@@ -464,28 +490,33 @@ public actor SayoDeviceService {
         return String(decoding: units, as: UTF16.self)
     }
 
-    private func transact(_ packet: SayoPacket) throws -> SayoPacket {
+    private func transact(_ packet: SayoPacket, boundTo identity: DeviceIdentity? = nil) throws -> SayoPacket {
+        let target = try requireSelectedDevice(identity)
         let output = try packet.encoded()
         Self.logger.debug(
             "HID TX command=\(Int(packet.command), privacy: .public) payloadLength=\(packet.payload.count, privacy: .public)"
         )
         var input = [UInt8](repeating: 0, count: SayoPacket.reportLength)
         var error = [CChar](repeating: 0, count: 256)
-        let length = output.withUnsafeBufferPointer { outputBuffer in
-            input.withUnsafeMutableBufferPointer { inputBuffer in
-                sayo_hid_transact(
-                    Self.vendorID,
-                    Self.productID,
-                    Self.usagePage,
-                    Self.usage,
-                    outputBuffer.baseAddress,
-                    outputBuffer.count,
-                    inputBuffer.baseAddress,
-                    inputBuffer.count,
-                    1200,
-                    &error,
-                    error.count
-                )
+        let length = target.serialNumber.withCString { serialNumber in
+            output.withUnsafeBufferPointer { outputBuffer in
+                input.withUnsafeMutableBufferPointer { inputBuffer in
+                    sayo_hid_transact(
+                        Self.vendorID,
+                        Self.productID,
+                        Self.usagePage,
+                        Self.usage,
+                        serialNumber,
+                        target.locationID,
+                        outputBuffer.baseAddress,
+                        outputBuffer.count,
+                        inputBuffer.baseAddress,
+                        inputBuffer.count,
+                        1200,
+                        &error,
+                        error.count
+                    )
+                }
             }
         }
         guard length > 0 else {
@@ -543,6 +574,14 @@ public actor SayoDeviceService {
             productID: info.product_id,
             locationID: info.location_id
         )
+    }
+
+    private func requireSelectedDevice(_ identity: DeviceIdentity? = nil) throws -> DeviceIdentity {
+        let target = identity ?? selectedDevice
+        guard let target, !target.serialNumber.isEmpty else {
+            throw SayoDeviceServiceError.deviceSelectionRequired
+        }
+        return target
     }
 
     private func string<T>(from tuple: T) -> String {

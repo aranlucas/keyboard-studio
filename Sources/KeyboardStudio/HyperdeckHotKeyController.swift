@@ -1,4 +1,4 @@
-import Carbon.HIToolbox
+@preconcurrency import Carbon.HIToolbox
 import Foundation
 import KeyboardCore
 
@@ -27,9 +27,9 @@ final class HyperdeckHotKeyController {
     private static let openCodexID: UInt32 = 1
     private static let acknowledgeID: UInt32 = 2
 
-    private var eventHandler: EventHandlerRef?
-    private var openCodexHotKey: EventHotKeyRef?
-    private var acknowledgeHotKey: EventHotKeyRef?
+    nonisolated(unsafe) private var eventHandler: EventHandlerRef?
+    nonisolated(unsafe) private var openCodexHotKey: EventHotKeyRef?
+    nonisolated(unsafe) private var acknowledgeHotKey: EventHotKeyRef?
     private let onEvent: (HyperdeckPhysicalEvent) -> Void
 
     init(onEvent: @escaping (HyperdeckPhysicalEvent) -> Void) throws {
@@ -70,7 +70,7 @@ final class HyperdeckHotKeyController {
         }
     }
 
-    isolated deinit {
+    deinit {
         if let openCodexHotKey {
             UnregisterEventHotKey(openCodexHotKey)
         }

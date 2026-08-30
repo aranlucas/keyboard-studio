@@ -62,6 +62,11 @@ static IOHIDDeviceRef copy_matching_device(
     char *error_buffer,
     size_t error_buffer_size
 ) {
+    if (manager_out == NULL) {
+        set_error(error_buffer, error_buffer_size, "Missing HID manager output pointer");
+        return NULL;
+    }
+
     IOHIDManagerRef manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
     if (manager == NULL) {
         set_error(error_buffer, error_buffer_size, "Could not create IOHIDManager");
@@ -78,6 +83,27 @@ static IOHIDDeviceRef copy_matching_device(
     CFNumberRef product = make_number(product_id);
     CFNumberRef matched_usage_page = make_number((int32_t)usage_page);
     CFNumberRef matched_usage = make_number((int32_t)usage);
+    if (matching == NULL || vendor == NULL || product == NULL || matched_usage_page == NULL || matched_usage == NULL) {
+        if (vendor != NULL) {
+            CFRelease(vendor);
+        }
+        if (product != NULL) {
+            CFRelease(product);
+        }
+        if (matched_usage_page != NULL) {
+            CFRelease(matched_usage_page);
+        }
+        if (matched_usage != NULL) {
+            CFRelease(matched_usage);
+        }
+        if (matching != NULL) {
+            CFRelease(matching);
+        }
+        set_error(error_buffer, error_buffer_size, "Could not allocate HID matching criteria");
+        IOHIDManagerClose(manager, kIOHIDOptionsTypeNone);
+        CFRelease(manager);
+        return NULL;
+    }
     CFDictionarySetValue(matching, CFSTR(kIOHIDVendorIDKey), vendor);
     CFDictionarySetValue(matching, CFSTR(kIOHIDProductIDKey), product);
     CFDictionarySetValue(matching, CFSTR(kIOHIDDeviceUsagePageKey), matched_usage_page);
@@ -92,7 +118,7 @@ static IOHIDDeviceRef copy_matching_device(
     IOReturn open_result = IOHIDManagerOpen(manager, kIOHIDOptionsTypeNone);
     if (open_result != kIOReturnSuccess) {
         char message[128];
-        snprintf(message, sizeof(message), "Could not open IOHIDManager (0x%08x)", open_result);
+        snprintf(message, sizeof(message), "Could not open IOHIDManager (0x%08x)", (unsigned int)open_result);
         set_error(error_buffer, error_buffer_size, message);
         CFRelease(manager);
         return NULL;
@@ -110,7 +136,21 @@ static IOHIDDeviceRef copy_matching_device(
     }
 
     CFIndex count = CFSetGetCount(devices);
+    if (count <= 0 || (size_t)count > SIZE_MAX / sizeof(void *)) {
+        set_error(error_buffer, error_buffer_size, "The HID device set is too large");
+        CFRelease(devices);
+        IOHIDManagerClose(manager, kIOHIDOptionsTypeNone);
+        CFRelease(manager);
+        return NULL;
+    }
     const void **values = calloc((size_t)count, sizeof(void *));
+    if (values == NULL) {
+        set_error(error_buffer, error_buffer_size, "Could not allocate HID device list");
+        CFRelease(devices);
+        IOHIDManagerClose(manager, kIOHIDOptionsTypeNone);
+        CFRelease(manager);
+        return NULL;
+    }
     CFSetGetValues(devices, values);
 
     IOHIDDeviceRef selected = NULL;
@@ -170,11 +210,16 @@ static void input_report_callback(
     if (length > state->capacity) {
         length = state->capacity;
     }
+    state->result = result;
+    if (result != kIOReturnSuccess || report == NULL || state->destination == NULL) {
+        state->length = 0;
+        state->completed = 1;
+        return;
+    }
     if (length > 0) {
         memcpy(state->destination, report, length);
     }
     state->length = length;
-    state->result = result;
     state->completed = 1;
 }
 
@@ -260,7 +305,7 @@ int sayo_hid_transact(
     IOReturn open_result = IOHIDDeviceOpen(device, kIOHIDOptionsTypeNone);
     if (open_result != kIOReturnSuccess) {
         char message[128];
-        snprintf(message, sizeof(message), "Could not open the SayoDevice interface (0x%08x)", open_result);
+        snprintf(message, sizeof(message), "Could not open the SayoDevice interface (0x%08x)", (unsigned int)open_result);
         set_error(error_buffer, error_buffer_size, message);
         close_device(manager, device);
         return -1;
@@ -294,7 +339,7 @@ int sayo_hid_transact(
     );
     if (write_result != kIOReturnSuccess) {
         char message[128];
-        snprintf(message, sizeof(message), "Could not send HID report (0x%08x)", write_result);
+        snprintf(message, sizeof(message), "Could not send HID report (0x%08x)", (unsigned int)write_result);
         set_error(error_buffer, error_buffer_size, message);
     } else {
         CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + ((double)timeout_milliseconds / 1000.0);
@@ -305,7 +350,7 @@ int sayo_hid_transact(
             set_error(error_buffer, error_buffer_size, "The keyboard did not answer before the timeout");
         } else if (state.result != kIOReturnSuccess) {
             char message[128];
-            snprintf(message, sizeof(message), "HID response failed (0x%08x)", state.result);
+            snprintf(message, sizeof(message), "HID response failed (0x%08x)", (unsigned int)state.result);
             set_error(error_buffer, error_buffer_size, message);
         }
     }

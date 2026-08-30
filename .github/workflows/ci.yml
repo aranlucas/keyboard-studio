@@ -6,10 +6,29 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check for accidental secrets
+        run: |
+          if git grep -n -I -E 'BEGIN (RSA|OPENSSH|EC|PGP) PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}'; then
+            echo "Potential credential material is tracked in the repository."
+            exit 1
+          fi
+      - name: Check formatting and package graph
+        run: |
+          git diff --check
+          swift package show-dependencies
       - name: Run Swift tests
         run: swift test
+      - name: Build release products
+        run: swift build -c release
+      - name: Run protocol assertions
+        run: swift run -c release protocol-check
+      - name: Analyze the C HID bridge
+        run: clang --analyze -Xanalyzer -analyzer-output=text -I Sources/CHIDBridge/include Sources/CHIDBridge/CHIDBridge.c

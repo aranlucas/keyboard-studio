@@ -6,7 +6,7 @@
 - primary_label: macOS / Mach-O reverse
 - primary_skill: skills/macos-reverse/SKILL.md
 - confidence: high
-- project_root: /Users/lucas/Projects/keyboard
+- project_root: local checkout (redacted for publication)
 - secondary: (none)
 
 ## MUST open next

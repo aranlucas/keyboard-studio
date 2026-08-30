@@ -102,6 +102,12 @@ final class HyperdeckController: ObservableObject {
 
     private static let configurationKey = "hyperdeckConfigurationV1"
     private static let logger = Logger(subsystem: "com.lucas.keyboardstudio", category: "Hyperdeck")
+    private static let blockedInterpreterNames: Set<String> = [
+        "awk", "automator", "bash", "bun", "command", "csh", "dash", "deno", "doas", "env", "fish",
+        "go", "java", "ksh", "launchctl", "lua", "luajit", "node", "open", "osascript", "perl", "php",
+        "python", "python2", "python3", "rscript", "ruby", "sed", "sh", "shortcuts", "sudo", "swift",
+        "swiftc", "tclsh", "tcsh", "xargs", "xcrun", "zsh",
+    ]
 
     init(defaults: UserDefaults = .standard) {
         let loadedConfiguration: HyperdeckConfiguration
@@ -274,18 +280,10 @@ final class HyperdeckController: ObservableObject {
         case "acknowledge-codex":
             Task { [weak self] in await self?.onAcknowledgeCodex?() }
         case "run-recipe":
-            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            let identifier = components?.queryItems?.first(where: { $0.name == "id" })?.value
-            let name = components?.queryItems?.first(where: { $0.name == "name" })?.value
-            if let identifier, let id = UUID(uuidString: identifier) {
-                execute(recipeID: id)
-            } else if let name,
-                      let recipe = configuration.recipes.first(where: { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame })
-            {
-                execute(recipeID: recipe.id)
-            } else {
-                record("Deep link failed", detail: "Recipe was not found.", isError: true)
-            }
+            // Recipe URLs used to allow any local client that knew a recipe
+            // name or UUID to trigger external processes and shortcuts.
+            // Keep recipe execution behind the hardware/App Intent paths.
+            statusMessage = "Recipe links are disabled for safety. Run recipes from a configured hardware gesture or an explicit App Intent."
         default:
             statusMessage = "Unsupported Keyboard Studio link: \(url.absoluteString)"
         }
@@ -418,7 +416,7 @@ final class HyperdeckController: ObservableObject {
             }
             record(gesture.title, detail: "Running “\(recipe.name)” in \(profile.name).")
             Self.logger.notice(
-                "Gesture=\(gesture.rawValue, privacy: .public) profile=\(profile.name, privacy: .public) recipe=\(recipe.name, privacy: .public)"
+                "Gesture=\(gesture.rawValue, privacy: .public) profile=\(profile.name, privacy: .private) recipe=\(recipe.name, privacy: .private)"
             )
             Task { [weak self] in await self?.execute(recipe) }
         }
@@ -491,11 +489,18 @@ final class HyperdeckController: ObservableObject {
             await onRGB?(step.color)
 
         case .runExecutable:
-            guard step.value.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: step.value) else {
+            // Keep configured compiled tools useful, but never delegate to a
+            // shell, interpreter, or executable script with caller arguments.
+            let requestedURL = URL(filePath: step.value)
+            let executableURL = requestedURL.resolvingSymlinksInPath()
+            guard requestedURL.path.hasPrefix("/"),
+                  FileManager.default.isExecutableFile(atPath: executableURL.path),
+                  !Self.isInterpreterExecutable(executableURL)
+            else {
                 throw HyperdeckExecutionError.executableNotApproved(step.value)
             }
             let process = Process()
-            process.executableURL = URL(filePath: step.value)
+            process.executableURL = executableURL
             process.arguments = step.arguments
             try process.run()
 
@@ -547,6 +552,21 @@ final class HyperdeckController: ObservableObject {
     private func persistConfiguration() {
         guard let data = try? JSONEncoder().encode(configuration) else { return }
         UserDefaults.standard.set(data, forKey: Self.configurationKey)
+    }
+
+    private static func isInterpreterExecutable(_ url: URL) -> Bool {
+        if blockedInterpreterNames.contains(url.lastPathComponent.lowercased()) {
+            return true
+        }
+
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return true
+        }
+        defer { try? handle.close() }
+        guard let prefix = try? handle.read(upToCount: 2), prefix.count == 2 else {
+            return true
+        }
+        return prefix[0] == 0x23 && prefix[1] == 0x21
     }
 
     private func scheduleGestureDeadline() {
@@ -631,9 +651,9 @@ final class HyperdeckController: ObservableObject {
         runtimeEvents.insert(HyperdeckRuntimeEvent(date: Date(), title: title, detail: detail, isError: isError), at: 0)
         if runtimeEvents.count > 100 { runtimeEvents.removeLast(runtimeEvents.count - 100) }
         if isError {
-            Self.logger.error("\(title, privacy: .public): \(detail, privacy: .public)")
+            Self.logger.error("\(title, privacy: .private): \(detail, privacy: .private)")
         } else {
-            Self.logger.notice("\(title, privacy: .public): \(detail, privacy: .public)")
+            Self.logger.notice("\(title, privacy: .private): \(detail, privacy: .private)")
         }
     }
 }

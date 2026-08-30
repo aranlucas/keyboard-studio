@@ -442,7 +442,7 @@ struct BackupStudioView: View {
 
                 GroupBox("Restore") {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Import validates the backup format and model code, then stages values in the app. Nothing is written until you review the relevant page and press Save.")
+                        Text("Import accepts files up to 1 MiB and validates the connected keyboard's product, serial, model, button layout, and advertised capabilities before staging. Nothing is written until you review the relevant page and press Save; imported scripts and passwords still deserve the same care as live device data.")
                             .foregroundStyle(.secondary)
                         Button("Import Backup…") { model.importBackup() }
                     }

@@ -4,7 +4,9 @@ Keyboard Studio is a native macOS SwiftUI configurator for the connected **SayoD
 
 ## Open the app
 
-Open `/Applications/Keyboard Studio.app`. The signed build artifact is also retained at [`dist/Keyboard Studio.app`](dist/Keyboard%20Studio.app).
+Open `/Applications/Keyboard Studio.app`. Running `./scripts/package_app.sh` writes a development artifact to the local, ignored `dist/Keyboard Studio.app` directory.
+
+The package script currently creates an ad-hoc, host-architecture build for local testing. It is not notarized and will be rejected by Gatekeeper when downloaded on another Mac. A public release must be signed with Developer ID, hardened, notarized, and stapled. The current build is Apple Silicon (`arm64`) only; Intel users need a future universal artifact.
 
 The SayoDevice advertises keyboard input, so macOS protects it with Input Monitoring:
 
@@ -16,7 +18,7 @@ The packaged app uses a stable local designated requirement, so rebuilding it no
 
 Keyboard Studio never requests Accessibility access and does not observe general keyboard input. Codex Deck registers only F13 and F16 as dedicated system hot keys. macOS notification access is separate and is requested only after you click **Enable macOS alerts**; if you previously denied it, the app links to Notification Settings instead of pretending macOS can show the prompt again.
 
-Codex Activity does not require keyboard access. It reads the local Codex summary database in read-only mode and refreshes every 15 seconds.
+Codex Activity does not require keyboard access. It reads `~/.codex/sqlite/codex-thread-summaries-dev.db` and recent lifecycle files under `~/.codex/sessions` in read-only mode, refreshes every 15 seconds, and never uploads them. If macOS alerts are enabled, the latest summary can appear in a local notification.
 
 ## Official-feature parity
 
@@ -27,7 +29,7 @@ The native sidebar now provides:
 - **Text & Passwords:** 16 one-key text slots and opt-in password loading. Save writes only the selected slot. Passwords are excluded from backups unless explicitly included.
 - **Scripts:** both named script slots, the raw on-device VM image, and safe builders for tap, repeat-while-held, and LED scripts. Scripts execute on the keyboard; they do not run macOS shell commands.
 - **Device:** name, USB identity, firmware/model metadata, and advertised command set.
-- **Backup & Restore:** portable JSON backups of key maps, opaque bytes, lighting, palettes, text, scripts, and naming. Import stages changes for review; it does not immediately write them.
+- **Backup & Restore:** portable JSON backups of key maps, opaque bytes, lighting, palettes, text, scripts, and naming. Import is limited to 1 MiB and requires a connected keyboard with matching product, serial, model, button layout, and advertised capabilities. It stages changes for review; it does not immediately write them.
 
 Firmware update, recovery/bootloader, device lock, and factory reset are shown as detected maintenance capabilities but remain guarded. Keyboard Studio will not guess destructive command payloads or offer a firmware downgrade for model `0x0002`.
 
@@ -71,7 +73,7 @@ The **Hyperdeck** sidebar includes:
 
 - **Gesture Lab:** test all ten classifications without touching the hardware, and tune chord, sequence, double-tap, single-hold, and both-hold timing.
 - **Smart Profiles:** match the frontmost app by bundle identifier using `NSWorkspace`, which needs no Accessibility permission. Unassigned gestures inherit the fallback profile, so an app profile can override only what it needs.
-- **Multi-Action Recipes:** run ordered native actions such as open app/URL, invoke a macOS Shortcut, wait, copy text, show an authorized notification, set volatile RGB, call Codex/focus/clipboard actions, or directly launch an explicitly configured absolute executable path. Recipes never pass command text through a shell.
+- **Multi-Action Recipes:** run ordered native actions such as open app/URL, invoke a macOS Shortcut, wait, copy text, show an authorized notification, set volatile RGB, call Codex/focus/clipboard actions, or directly launch an explicitly configured absolute executable path. Shells, interpreters, and executable scripts are rejected; compiled executables still run with their configured arguments.
 - **Codex Review Deck:** cycle through unread Codex activity, bring the review list forward, acknowledge updates, and retain the existing blue-working/red-attention status lamp.
 - **Focus Lamp:** a configurable 1–180 minute timer makes Button 1 green, changes it to orange for the final minute, and flashes Button 2 red on completion before restoring Codex status.
 - **Clipboard Deck:** optional text-only clipboard history, held only in memory, capped at 20 items and 10,000 characters per item. It can navigate, copy, trim, change case, and collapse whitespace; it never injects a synthetic paste.
@@ -83,17 +85,15 @@ Keyboard Studio keeps one reusable editor window, performs only a lightweight pr
 
 ### Shortcuts and deep links
 
-Keyboard Studio includes App Intent actions for running a named recipe, toggling/resetting focus, and acknowledging Codex. It can also invoke any existing macOS Shortcut by name from a recipe. The installed app registers these automation URLs:
+Keyboard Studio includes App Intent actions for running a named recipe, toggling/resetting focus, and acknowledging Codex. It can also invoke any existing macOS Shortcut by name from a recipe. The installed app registers these safe automation URLs:
 
 ```text
 keyboardstudio://toggle-focus
 keyboardstudio://reset-focus
 keyboardstudio://acknowledge-codex
-keyboardstudio://run-recipe?name=Open%20Codex
-keyboardstudio://run-recipe?id=<recipe-uuid>
 ```
 
-The URL actions are useful from Shortcuts, Raycast, scripts, calendar alarms, and other launchers without granting Accessibility access.
+Recipe execution is deliberately not exposed through custom URLs: external apps cannot trigger a configured recipe without the user-authored hardware gesture or App Intent. The remaining URL actions are useful from Shortcuts, Raycast, scripts, calendar alarms, and other launchers without granting Accessibility access.
 
 ## Device scripts
 
@@ -128,3 +128,7 @@ codesign --verify --deep --strict --verbose=2 "dist/Keyboard Studio.app"
 - `protocol-check`: framework-independent protocol assertions for this machine's Command Line Tools installation.
 
 The reverse-engineering record is in [`work/keyboard-two/report/reverse-engineering.md`](work/keyboard-two/report/reverse-engineering.md).
+
+## License and attribution
+
+Keyboard Studio is released under the [MIT License](LICENSE). The protocol implementation is independent and references public SayoDevice documentation and Sayobot's public Sayo_CLI for interoperability research; no upstream source or runtime dependency is bundled. See [NOTICE](NOTICE) for upstream references.

@@ -9,6 +9,7 @@ enum StudioSection: String, CaseIterable, Identifiable {
     case scripts = "Scripts"
     case device = "Device"
     case backups = "Backup & Restore"
+    case hyperdeck = "Hyperdeck"
     case codexDeck = "Codex Deck"
     case activity = "Codex Activity"
     case protocolInfo = "Protocol"
@@ -23,6 +24,7 @@ enum StudioSection: String, CaseIterable, Identifiable {
         case .scripts: "chevron.left.forwardslash.chevron.right"
         case .device: "gearshape.2.fill"
         case .backups: "externaldrive.fill.badge.timemachine"
+        case .hyperdeck: "rectangle.2.swap"
         case .codexDeck: "sparkles.rectangle.stack.fill"
         case .activity: "bell.badge"
         case .protocolInfo: "cable.connector"
@@ -79,6 +81,8 @@ struct ContentView: View {
                 DeviceSettingsStudioView(model: model)
             case .backups:
                 BackupStudioView(model: model)
+            case .hyperdeck:
+                HyperdeckStudioView(controller: model.hyperdeck)
             case .codexDeck:
                 CodexDeckView(model: model)
             case .activity:
@@ -92,6 +96,7 @@ struct ContentView: View {
             guard phase == .active else { return }
             Task { await model.refreshDevice() }
         }
+        .onOpenURL { model.hyperdeck.handleDeepLink($0) }
     }
 }
 
@@ -731,9 +736,10 @@ private struct CodexActivityView: View {
                 ProgressView("Loading Codex summaries…")
                 Spacer()
             } else {
-                List(model.activities) { activity in
+                List(model.activities, selection: $model.selectedCodexReviewActivityID) { activity in
                     ActivityRow(activity: activity)
                         .padding(.vertical, 6)
+                        .tag(activity.id)
                 }
                 .listStyle(.inset)
                 .refreshable { await model.refreshActivities() }

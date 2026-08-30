@@ -19,8 +19,9 @@ plutil -insert CFBundleInfoDictionaryVersion -string "6.0" "$app_dir/Contents/In
 plutil -insert CFBundleIconFile -string "KeyboardStudio" "$app_dir/Contents/Info.plist"
 plutil -insert CFBundleName -string "Keyboard Studio" "$app_dir/Contents/Info.plist"
 plutil -insert CFBundlePackageType -string "APPL" "$app_dir/Contents/Info.plist"
-plutil -insert CFBundleShortVersionString -string "0.4.1" "$app_dir/Contents/Info.plist"
-plutil -insert CFBundleVersion -string "8" "$app_dir/Contents/Info.plist"
+plutil -insert CFBundleShortVersionString -string "0.5.0" "$app_dir/Contents/Info.plist"
+plutil -insert CFBundleVersion -string "9" "$app_dir/Contents/Info.plist"
+plutil -insert CFBundleURLTypes -json '[{"CFBundleURLName":"com.lucas.keyboardstudio.actions","CFBundleURLSchemes":["keyboardstudio"]}]' "$app_dir/Contents/Info.plist"
 plutil -insert LSMinimumSystemVersion -string "14.0" "$app_dir/Contents/Info.plist"
 plutil -insert NSHumanReadableCopyright -string "Built for local SayoDevice customization" "$app_dir/Contents/Info.plist"
 

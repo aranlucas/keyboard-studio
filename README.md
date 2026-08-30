@@ -12,7 +12,7 @@ The SayoDevice advertises keyboard input, so macOS protects it with Input Monito
 2. Enable Keyboard Studio in **System Settings › Privacy & Security › Input Monitoring**.
 3. Click **Restart Keyboard Studio**. Closing the window is not enough because the Codex Deck menu-bar remote keeps the application running.
 
-The packaged app uses a stable local designated requirement, so rebuilding it no longer replaces its Input Monitoring identity. Version 0.4.1 uses the same `com.lucas.keyboardstudio` requirement as the previously approved build.
+The packaged app uses a stable local designated requirement, so rebuilding it no longer replaces its Input Monitoring identity. Version 0.5.0 uses the same `com.lucas.keyboardstudio` requirement as the previously approved build.
 
 Keyboard Studio never requests Accessibility access and does not observe general keyboard input. Codex Deck registers only F13 and F16 as dedicated system hot keys. macOS notification access is separate and is requested only after you click **Enable macOS alerts**; if you previously denied it, the app links to Notification Settings instead of pretending macOS can show the prompt again.
 
@@ -49,6 +49,49 @@ The **Codex Deck** profile gives the pad a purpose-built first layer:
 - Button 2 sends F16, marks current Codex updates as caught up, and clears the attention lamp while leaving the working lamp accurate.
 - A menu-bar remote keeps both actions and the unread count available when the main window is closed.
 - Installing the profile preserves all other layers and the device's opaque configuration bytes.
+
+## Two-Key Hyperdeck
+
+Hyperdeck turns the F13/F16 Codex Deck mapping into ten configurable gestures. Classification happens locally from the dedicated hot key's press and release events; Keyboard Studio never installs a general keyboard event tap.
+
+| Gesture | Default action |
+| --- | --- |
+| Left tap | Open Codex |
+| Right tap | Clear Codex alerts |
+| Left hold | Start or pause the focus timer |
+| Right hold | Select the next clipboard item |
+| Left double-tap | Select the previous clipboard item |
+| Right double-tap | Copy the selected clipboard item |
+| Both keys | Show Keyboard Studio |
+| Both-key hold | Reset the focus timer |
+| Left then right | Select the next Codex activity to review |
+| Right then left | Run the `Quick Note` macOS Shortcut with clipboard input |
+
+The **Hyperdeck** sidebar includes:
+
+- **Gesture Lab:** test all ten classifications without touching the hardware, and tune chord, sequence, double-tap, single-hold, and both-hold timing.
+- **Smart Profiles:** match the frontmost app by bundle identifier using `NSWorkspace`, which needs no Accessibility permission. Unassigned gestures inherit the fallback profile, so an app profile can override only what it needs.
+- **Multi-Action Recipes:** run ordered native actions such as open app/URL, invoke a macOS Shortcut, wait, copy text, show an authorized notification, set volatile RGB, call Codex/focus/clipboard actions, or directly launch an explicitly configured absolute executable path. Recipes never pass command text through a shell.
+- **Codex Review Deck:** cycle through unread Codex activity, bring the review list forward, acknowledge updates, and retain the existing blue-working/red-attention status lamp.
+- **Focus Lamp:** a configurable 1–180 minute timer makes Button 1 green, changes it to orange for the final minute, and flashes Button 2 red on completion before restoring Codex status.
+- **Clipboard Deck:** optional text-only clipboard history, held only in memory, capped at 20 items and 10,000 characters per item. It can navigate, copy, trim, change case, and collapse whitespace; it never injects a synthetic paste.
+- **Event Log:** records every F13/F16 press and release, gesture classification, active profile, recipe, completion, and error. The same events are written to macOS unified logging under subsystem `com.lucas.keyboardstudio`, category `Hyperdeck`.
+
+Hyperdeck configuration is saved locally in `UserDefaults`. Clipboard contents and event history are deliberately not persisted.
+
+### Shortcuts and deep links
+
+Keyboard Studio includes App Intent actions for running a named recipe, toggling/resetting focus, and acknowledging Codex. It can also invoke any existing macOS Shortcut by name from a recipe. The installed app registers these automation URLs:
+
+```text
+keyboardstudio://toggle-focus
+keyboardstudio://reset-focus
+keyboardstudio://acknowledge-codex
+keyboardstudio://run-recipe?name=Open%20Codex
+keyboardstudio://run-recipe?id=<recipe-uuid>
+```
+
+The URL actions are useful from Shortcuts, Raycast, scripts, calendar alarms, and other launchers without granting Accessibility access.
 
 ## Device scripts
 

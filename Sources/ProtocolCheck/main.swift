@@ -189,8 +189,70 @@ do {
     try check(interruptedLifecycle?.kind == .interrupted, "Codex lifecycle parser did not detect an interrupted task")
     try check(interruptedLifecycle?.timestamp == 1_788_055_380, "Codex lifecycle parser did not decode the abort timestamp")
 
-    print("PASS: protocol, official-feature catalog, backup, Lighting v2, Codex Deck, and Codex lifecycle assertions")
+    func event(_ key: HyperdeckKey, _ phase: HyperdeckKeyPhase, _ timestamp: TimeInterval) -> HyperdeckPhysicalEvent {
+        HyperdeckPhysicalEvent(key: key, phase: phase, timestamp: timestamp)
+    }
+
+    var leftTap = HyperdeckGestureRecognizer()
+    try check(leftTap.handle(event(.left, .down, 0)).isEmpty, "left-tap recognizer emitted on key down")
+    try check(leftTap.handle(event(.left, .up, 0.05)).isEmpty, "left-tap recognizer did not wait for double-tap ambiguity")
+    try check(leftTap.flush(at: 0.31) == [.leftTap], "left tap was not emitted after the sequence window")
+
+    var rightHold = HyperdeckGestureRecognizer()
+    _ = rightHold.handle(event(.right, .down, 1))
+    try check(rightHold.flush(at: 1.46) == [.rightHold], "right hold was not emitted while the key remained down")
+    try check(rightHold.handle(event(.right, .up, 1.6)).isEmpty, "right hold was emitted twice on release")
+
+    var leftDoubleTap = HyperdeckGestureRecognizer()
+    _ = leftDoubleTap.handle(event(.left, .down, 2))
+    _ = leftDoubleTap.handle(event(.left, .up, 2.04))
+    _ = leftDoubleTap.handle(event(.left, .down, 2.12))
+    try check(leftDoubleTap.handle(event(.left, .up, 2.16)) == [.leftDoubleTap], "left double-tap was classified incorrectly")
+
+    var orderedSequence = HyperdeckGestureRecognizer()
+    _ = orderedSequence.handle(event(.right, .down, 3))
+    _ = orderedSequence.handle(event(.right, .up, 3.04))
+    _ = orderedSequence.handle(event(.left, .down, 3.12))
+    try check(orderedSequence.handle(event(.left, .up, 3.16)) == [.rightThenLeft], "ordered two-key sequence was classified incorrectly")
+
+    var bothTap = HyperdeckGestureRecognizer()
+    _ = bothTap.handle(event(.left, .down, 4))
+    _ = bothTap.handle(event(.right, .down, 4.04))
+    _ = bothTap.handle(event(.left, .up, 4.1))
+    try check(bothTap.handle(event(.right, .up, 4.12)) == [.bothTap], "two-key chord was not classified as both-tap")
+
+    var bothHold = HyperdeckGestureRecognizer()
+    _ = bothHold.handle(event(.left, .down, 5))
+    _ = bothHold.handle(event(.right, .down, 5.04))
+    try check(bothHold.flush(at: 6.55) == [.bothHold], "both-key hold did not fire at its threshold")
+    _ = bothHold.handle(event(.left, .up, 6.6))
+    try check(bothHold.handle(event(.right, .up, 6.62)).isEmpty, "both-key hold was emitted twice on release")
+
+    var normalizedTiming = HyperdeckGestureTiming(chordWindow: 0.25, sequenceWindow: 99, holdThreshold: 0.2, bothHoldThreshold: 0.1)
+    normalizedTiming.normalize()
+    try check(normalizedTiming.holdThreshold >= normalizedTiming.chordWindow, "timing normalization allowed holds to preempt the chord window")
+    try check(normalizedTiming.sequenceWindow == 0.8, "timing normalization did not clamp the sequence window")
+    try check(normalizedTiming.bothHoldThreshold >= normalizedTiming.holdThreshold, "timing normalization allowed both-hold below single-hold")
+
+    let hyperdeckDefaults = HyperdeckConfiguration.defaults
+    let fallbackProfile = try hyperdeckDefaults.profiles.first(where: { $0.bundleIdentifiers.isEmpty })
+        .unwrap(or: "Hyperdeck defaults are missing a fallback profile")
+    let xcodeProfile = try hyperdeckDefaults.profiles.first(where: { $0.name == "Xcode" })
+        .unwrap(or: "Hyperdeck defaults are missing the Xcode profile")
+    try check(HyperdeckGesture.allCases.allSatisfy { hyperdeckDefaults.recipeID(for: $0, profileID: fallbackProfile.id) != nil }, "fallback profile does not assign every gesture")
+    try check(hyperdeckDefaults.recipeID(for: .leftTap, profileID: xcodeProfile.id) == hyperdeckDefaults.recipeID(for: .leftTap, profileID: fallbackProfile.id), "smart-profile fallback did not inherit an unassigned gesture")
+    let hyperdeckRoundTrip = try JSONDecoder().decode(HyperdeckConfiguration.self, from: JSONEncoder().encode(hyperdeckDefaults))
+    try check(hyperdeckRoundTrip == hyperdeckDefaults, "Hyperdeck configuration did not round-trip through JSON")
+
+    print("PASS: protocol, official-feature catalog, backup, Lighting v2, Codex Deck, Codex lifecycle, and Hyperdeck gesture assertions")
 } catch {
     fputs("FAIL: \(error)\n", stderr)
     exit(1)
+}
+
+private extension Optional {
+    func unwrap(or message: String) throws -> Wrapped {
+        guard let self else { throw CheckFailure.failed(message) }
+        return self
+    }
 }

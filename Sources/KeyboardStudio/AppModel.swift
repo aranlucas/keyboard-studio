@@ -49,6 +49,7 @@ enum ScriptPreset: String, CaseIterable, Identifiable {
 
 @MainActor
 final class AppModel: ObservableObject {
+    let hyperdeck: HyperdeckController
     @Published var deviceSnapshot: SayoDeviceSnapshot?
     @Published var editableButtons: [SayoButtonConfiguration]
     @Published var lightingConfigurations: [SayoLightingV2Configuration] = []
@@ -81,6 +82,7 @@ final class AppModel: ObservableObject {
     @Published var activeCodexTaskCount = 0
     @Published var codexTaskWasInterrupted = false
     @Published var deckMessage = "Codex Deck is ready for new activity."
+    @Published var selectedCodexReviewActivityID: String?
     @Published private(set) var deckPresses: [CodexDeckPress] = []
 
     private let deviceService = SayoDeviceService()
@@ -89,10 +91,11 @@ final class AppModel: ObservableObject {
     private var hasLoadedActivities = false
     private var hasStarted = false
     private var activityPollingTask: Task<Void, Never>?
-    private var hotKeyController: CodexDeckHotKeyController?
     private var runtimeStatus = CodexRuntimeStatus()
     private var originalLighting: [SayoLightingV2Configuration]?
     private var appliedLampFrame: CodexLampFrame?
+    private var hyperdeckLampOverride: CodexLampFrame?
+    private var profileFlashTask: Task<Void, Never>?
 
     private static let acknowledgedTimestampKey = "codexDeckAcknowledgedAt"
     private static let runtimeAcknowledgedTimestampKey = "codexDeckRuntimeAcknowledgedAt"
@@ -103,10 +106,13 @@ final class AppModel: ObservableObject {
     )
 
     init() {
+        hyperdeck = HyperdeckController()
         editableButtons = Self.fallbackButtons
         if UserDefaults.standard.object(forKey: Self.statusLampEnabledKey) == nil {
             UserDefaults.standard.set(true, forKey: Self.statusLampEnabledKey)
         }
+        configureHyperdeck()
+        HyperdeckIntentBridge.install(controller: hyperdeck)
         Task { [weak self] in
             await self?.start()
         }
@@ -115,7 +121,7 @@ final class AppModel: ObservableObject {
     func start() async {
         guard !hasStarted else { return }
         hasStarted = true
-        installCodexDeckHotkeys()
+        hyperdeck.start()
 
         async let deviceLoad: Void = refreshDevice()
         async let activityLoad: Void = refreshActivities(notifyNew: false)
@@ -592,6 +598,31 @@ final class AppModel: ObservableObject {
         await synchronizeCodexStatusLamp(force: true)
     }
 
+    func showKeyboardStudio() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        NSApplication.shared.windows.first(where: { $0.title.contains("Keyboard Studio") || $0.title == "Hyperdeck" })?
+            .makeKeyAndOrderFront(nil)
+    }
+
+    func selectNextCodexReview() {
+        let unread = activities.filter { $0.updatedAt > acknowledgedTimestamp }
+        let candidates = unread.isEmpty ? activities : unread
+        guard !candidates.isEmpty else {
+            deckMessage = "No Codex activity is available to review."
+            return
+        }
+        if let selectedCodexReviewActivityID,
+           let current = candidates.firstIndex(where: { $0.id == selectedCodexReviewActivityID })
+        {
+            self.selectedCodexReviewActivityID = candidates[(current + 1) % candidates.count].id
+        } else {
+            selectedCodexReviewActivityID = candidates[0].id
+        }
+        UserDefaults.standard.set(StudioSection.activity.rawValue, forKey: "selectedStudioSection")
+        showKeyboardStudio()
+        deckMessage = "Selected the next Codex activity for review."
+    }
+
     func previewCodexDeckLight() async {
         guard deviceSnapshot != nil else {
             deckMessage = "Connect the SayoDevice before testing its RGB alert."
@@ -748,12 +779,12 @@ final class AppModel: ObservableObject {
         guard deviceSnapshot != nil, supportsRGBLighting else { return }
 
         let enabled = UserDefaults.standard.bool(forKey: Self.statusLampEnabledKey)
-        let desiredFrame = enabled
+        let desiredFrame = hyperdeckLampOverride ?? (enabled
             ? CodexLampFrame(
                 button1: activeCodexTaskCount > 0 ? .workingBlue : .off,
                 button2: hasCodexAttentionWaiting ? .attentionRed : .off
             )
-            : .off
+            : .off)
 
         do {
             if desiredFrame == .off {
@@ -804,46 +835,14 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private func installCodexDeckHotkeys() {
-        guard hotKeyController == nil else { return }
-        do {
-            hotKeyController = try CodexDeckHotKeyController { [weak self] action in
-                self?.handleCodexDeckAction(action)
-            }
-        } catch {
-            deckMessage = "F13/F16 hot keys are unavailable: \(error.localizedDescription)"
-        }
-    }
-
-    private func handleCodexDeckAction(_ action: CodexDeckAction) {
-        recordPress(action)
-        switch action {
-        case .openCodex:
-            openCodex()
-        case .acknowledge:
-            Task { [weak self] in
-                await self?.acknowledgeCodexDeck()
-            }
-        }
-    }
-
-    private func recordPress(_ action: CodexDeckAction) {
-        let press = switch action {
-        case .openCodex:
-            CodexDeckPress(
-                date: Date(),
-                key: "F13",
-                action: "Open Codex",
-                detail: "Hot key received; bringing Codex forward."
-            )
-        case .acknowledge:
-            CodexDeckPress(
-                date: Date(),
-                key: "F16",
-                action: "Clear alerts",
-                detail: "Hot key received; marking current updates caught up."
-            )
-        }
+    private func recordPhysicalPress(_ event: HyperdeckPhysicalEvent) {
+        guard event.phase == .down else { return }
+        let press = CodexDeckPress(
+            date: Date(),
+            key: event.key == .left ? "F13" : "F16",
+            action: "Physical press",
+            detail: "Hyperdeck received the key; gesture recognition is active."
+        )
         deckPresses.insert(press, at: 0)
         if deckPresses.count > 20 {
             deckPresses.removeLast(deckPresses.count - 20)
@@ -851,6 +850,75 @@ final class AppModel: ObservableObject {
         Self.deckLogger.notice(
             "Key press key=\(press.key, privacy: .public) action=\(press.action, privacy: .public)"
         )
+    }
+
+    private func configureHyperdeck() {
+        hyperdeck.onOpenCodex = { [weak self] in self?.openCodex() }
+        hyperdeck.onAcknowledgeCodex = { [weak self] in await self?.acknowledgeCodexDeck() }
+        hyperdeck.onNextCodexReview = { [weak self] in self?.selectNextCodexReview() }
+        hyperdeck.onShowStudio = { [weak self] in self?.showKeyboardStudio() }
+        hyperdeck.onNotification = { [weak self] title, body in
+            await self?.deliverNotification(title: title, body: body)
+        }
+        hyperdeck.onRGB = { [weak self] color in await self?.flashHyperdeckColor(color) }
+        hyperdeck.onProfileChanged = { [weak self] profile in await self?.flashHyperdeckColor(profile.color) }
+        hyperdeck.onFocusChanged = { [weak self] state in await self?.updateFocusLamp(state) }
+        hyperdeck.onPhysicalEvent = { [weak self] event in self?.recordPhysicalPress(event) }
+    }
+
+    private func deliverNotification(title: String, body: String) async {
+        guard alertsAuthorized else {
+            activityMessage = "Notification action skipped because macOS alerts are not enabled."
+            return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        try? await UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "hyperdeck-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        ))
+    }
+
+    private func flashHyperdeckColor(_ color: HyperdeckRGBColor) async {
+        guard supportsRGBLighting, !hyperdeck.focusState.isRunning else { return }
+        profileFlashTask?.cancel()
+        let previous = hyperdeckLampOverride
+        let lampColor = CodexLampColor(red: color.red, green: color.green, blue: color.blue)
+        let frame = CodexLampFrame(button1: lampColor, button2: lampColor)
+        hyperdeckLampOverride = frame
+        await synchronizeCodexStatusLamp(force: true)
+        profileFlashTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(650))
+            guard !Task.isCancelled, let self else { return }
+            self.hyperdeckLampOverride = previous
+            await self.synchronizeCodexStatusLamp(force: true)
+        }
+    }
+
+    private func updateFocusLamp(_ state: HyperdeckFocusState) async {
+        profileFlashTask?.cancel()
+        if state.isRunning {
+            let color: CodexLampColor = state.remaining <= 60
+                ? CodexLampColor(red: 255, green: 150, blue: 32)
+                : CodexLampColor(red: 44, green: 210, blue: 120)
+            hyperdeckLampOverride = CodexLampFrame(button1: color, button2: .off)
+            await synchronizeCodexStatusLamp()
+        } else if state.remaining <= 0 {
+            hyperdeckLampOverride = CodexLampFrame(button1: .off, button2: .attentionRed)
+            await synchronizeCodexStatusLamp(force: true)
+            profileFlashTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled, let self else { return }
+                self.hyperdeckLampOverride = nil
+                await self.synchronizeCodexStatusLamp(force: true)
+            }
+        } else {
+            hyperdeckLampOverride = nil
+            await synchronizeCodexStatusLamp(force: true)
+        }
     }
 
     private static let fallbackButtons: [SayoButtonConfiguration] = [

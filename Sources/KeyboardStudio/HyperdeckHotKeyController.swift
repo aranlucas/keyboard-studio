@@ -2,13 +2,13 @@ import Carbon.HIToolbox
 import Foundation
 import KeyboardCore
 
-/// Registers only the two dedicated function keys used by Codex Deck.
+/// Registers only the two dedicated function keys used by Hyperdeck.
 ///
 /// Carbon hot keys are deliberately used instead of an NSEvent global monitor:
 /// the app receives F13/F16 activations without observing arbitrary keystrokes or
 /// requiring Accessibility permission.
 @MainActor
-final class CodexDeckHotKeyController {
+final class HyperdeckHotKeyController {
     enum RegistrationError: LocalizedError {
         case installHandler(OSStatus)
         case registerKey(String, OSStatus)
@@ -16,7 +16,7 @@ final class CodexDeckHotKeyController {
         var errorDescription: String? {
             switch self {
             case let .installHandler(status):
-                "Could not install the Codex Deck hot-key handler (OSStatus \(status))."
+                "Could not install the Hyperdeck hot-key handler (OSStatus \(status))."
             case let .registerKey(key, status):
                 "Could not register \(key) as a Codex Deck hot key (OSStatus \(status))."
             }
@@ -30,20 +30,20 @@ final class CodexDeckHotKeyController {
     private var eventHandler: EventHandlerRef?
     private var openCodexHotKey: EventHotKeyRef?
     private var acknowledgeHotKey: EventHotKeyRef?
-    private let onAction: (CodexDeckAction) -> Void
+    private let onEvent: (HyperdeckPhysicalEvent) -> Void
 
-    init(onAction: @escaping (CodexDeckAction) -> Void) throws {
-        self.onAction = onAction
+    init(onEvent: @escaping (HyperdeckPhysicalEvent) -> Void) throws {
+        self.onEvent = onEvent
 
-        var eventType = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
+        var eventTypes = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
         let handlerStatus = InstallEventHandler(
             GetApplicationEventTarget(),
             Self.eventHandlerCallback,
-            1,
-            &eventType,
+            eventTypes.count,
+            &eventTypes,
             Unmanaged.passUnretained(self).toOpaque(),
             &eventHandler
         )
@@ -102,15 +102,18 @@ final class CodexDeckHotKeyController {
         }
     }
 
-    private func handle(id: UInt32) {
+    private func handle(id: UInt32, phase: HyperdeckKeyPhase) {
+        let key: HyperdeckKey
         switch id {
-        case Self.openCodexID:
-            onAction(.openCodex)
-        case Self.acknowledgeID:
-            onAction(.acknowledge)
-        default:
-            break
+        case Self.openCodexID: key = .left
+        case Self.acknowledgeID: key = .right
+        default: return
         }
+        onEvent(HyperdeckPhysicalEvent(
+            key: key,
+            phase: phase,
+            timestamp: ProcessInfo.processInfo.systemUptime
+        ))
     }
 
     private func tearDown() {
@@ -145,11 +148,12 @@ final class CodexDeckHotKeyController {
             return OSStatus(eventNotHandledErr)
         }
 
-        let controller = Unmanaged<CodexDeckHotKeyController>
+        let controller = Unmanaged<HyperdeckHotKeyController>
             .fromOpaque(userData)
             .takeUnretainedValue()
+        let phase: HyperdeckKeyPhase = GetEventKind(event) == UInt32(kEventHotKeyPressed) ? .down : .up
         MainActor.assumeIsolated {
-            controller.handle(id: hotKeyID.id)
+            controller.handle(id: hotKeyID.id, phase: phase)
         }
         return OSStatus(noErr)
     }

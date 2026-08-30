@@ -31,6 +31,7 @@ let package = Package(
             dependencies: ["KeyboardCore"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
+                .linkedFramework("AppIntents"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("UserNotifications"),
             ]

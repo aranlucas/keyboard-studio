@@ -33,7 +33,7 @@ enum StudioSection: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
-    @ObservedObject var model: AppModel
+    let model: AppModel
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) private var openWindow
     @AppStorage("selectedStudioSection") private var selectedSectionRaw = StudioSection.keyboard.rawValue
@@ -55,13 +55,8 @@ struct ContentView: View {
                 HStack {
                     Label(section.rawValue, systemImage: section.icon)
                     Spacer()
-                    if section == .codexDeck, model.unreadActivityCount > 0 {
-                        Text(model.unreadActivityCount, format: .number)
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(.purple, in: Capsule())
+                    if section == .codexDeck {
+                        CodexSidebarBadge(model: model)
                     }
                 }
                     .tag(section)
@@ -103,6 +98,21 @@ struct ContentView: View {
             Task { await model.refreshDevicePresence() }
         }
         .onOpenURL { model.hyperdeck.handleDeepLink($0) }
+    }
+}
+
+private struct CodexSidebarBadge: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        if model.unreadActivityCount > 0 {
+            Text(model.unreadActivityCount, format: .number)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(.purple, in: Capsule())
+        }
     }
 }
 

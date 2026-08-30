@@ -12,7 +12,7 @@ The SayoDevice advertises keyboard input, so macOS protects it with Input Monito
 2. Enable Keyboard Studio in **System Settings › Privacy & Security › Input Monitoring**.
 3. Click **Restart Keyboard Studio**. Closing the window is not enough because the Codex Deck menu-bar remote keeps the application running.
 
-The packaged app uses a stable local designated requirement, so rebuilding it no longer replaces its Input Monitoring identity. Version 0.5.1 uses the same `com.lucas.keyboardstudio` requirement as the previously approved build.
+The packaged app uses a stable local designated requirement, so rebuilding it no longer replaces its Input Monitoring identity. Version 0.5.2 uses the same `com.lucas.keyboardstudio` requirement as the previously approved build.
 
 Keyboard Studio never requests Accessibility access and does not observe general keyboard input. Codex Deck registers only F13 and F16 as dedicated system hot keys. macOS notification access is separate and is requested only after you click **Enable macOS alerts**; if you previously denied it, the app links to Notification Settings instead of pretending macOS can show the prompt again.
 
@@ -79,7 +79,7 @@ The **Hyperdeck** sidebar includes:
 
 Hyperdeck configuration is saved locally in `UserDefaults`. Clipboard contents and event history are deliberately not persisted.
 
-Keyboard Studio keeps one reusable editor window, performs only a lightweight presence check when the app becomes active, and schedules gesture work at exact recognition deadlines instead of running a continuous polling timer. Full device reads happen at launch and when you explicitly refresh or save.
+Keyboard Studio keeps one reusable editor window, performs only a lightweight presence check when the app becomes active, and schedules gesture work at exact recognition deadlines instead of running a continuous polling timer. Root navigation does not observe the entire application model, extended device configuration is published as one coherent update, and editable collections use stable domain identities. Full device reads happen at launch and when you explicitly refresh or save.
 
 ### Shortcuts and deep links
 

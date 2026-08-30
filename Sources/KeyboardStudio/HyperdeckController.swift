@@ -72,7 +72,7 @@ final class HyperdeckController: ObservableObject {
     @Published private(set) var activeBundleIdentifier = ""
     @Published private(set) var runtimeEvents: [HyperdeckRuntimeEvent] = []
     @Published private(set) var clipboardItems: [HyperdeckClipboardItem] = []
-    @Published var selectedClipboardIndex = 0
+    @Published var selectedClipboardItemID: UUID?
     @Published private(set) var focusState: HyperdeckFocusState
     @Published private(set) var isListening = false
     @Published private(set) var statusMessage = "Hyperdeck is ready."
@@ -302,8 +302,10 @@ final class HyperdeckController: ObservableObject {
             statusMessage = "Clipboard Deck has no captured text yet."
             return
         }
-        selectedClipboardIndex = (selectedClipboardIndex - 1 + clipboardItems.count) % clipboardItems.count
-        statusMessage = "Selected clipboard item \(selectedClipboardIndex + 1) of \(clipboardItems.count)."
+        let currentIndex = selectedClipboardItemIndex ?? 0
+        let selectedIndex = (currentIndex - 1 + clipboardItems.count) % clipboardItems.count
+        selectedClipboardItemID = clipboardItems[selectedIndex].id
+        statusMessage = "Selected clipboard item \(selectedIndex + 1) of \(clipboardItems.count)."
     }
 
     func selectNextClipboardItem() {
@@ -311,27 +313,28 @@ final class HyperdeckController: ObservableObject {
             statusMessage = "Clipboard Deck has no captured text yet."
             return
         }
-        selectedClipboardIndex = (selectedClipboardIndex + 1) % clipboardItems.count
-        statusMessage = "Selected clipboard item \(selectedClipboardIndex + 1) of \(clipboardItems.count)."
+        let selectedIndex = ((selectedClipboardItemIndex ?? -1) + 1) % clipboardItems.count
+        selectedClipboardItemID = clipboardItems[selectedIndex].id
+        statusMessage = "Selected clipboard item \(selectedIndex + 1) of \(clipboardItems.count)."
     }
 
     func copySelectedClipboardItem() {
-        guard clipboardItems.indices.contains(selectedClipboardIndex) else {
+        guard let selectedClipboardItemIndex else {
             statusMessage = "Select a clipboard item first."
             return
         }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(clipboardItems[selectedClipboardIndex].text, forType: .string)
+        pasteboard.setString(clipboardItems[selectedClipboardItemIndex].text, forType: .string)
         lastPasteboardChangeCount = pasteboard.changeCount
         statusMessage = "Selected item copied. Paste it normally with Command–V."
         record("Clipboard selection copied", detail: "No synthetic paste event was sent.")
     }
 
     func transformSelectedClipboardItem(_ transform: HyperdeckClipboardTransform) {
-        guard clipboardItems.indices.contains(selectedClipboardIndex) else { return }
-        let original = clipboardItems[selectedClipboardIndex].text
-        clipboardItems[selectedClipboardIndex].text = switch transform {
+        guard let selectedClipboardItemIndex else { return }
+        let original = clipboardItems[selectedClipboardItemIndex].text
+        clipboardItems[selectedClipboardItemIndex].text = switch transform {
         case .trim: original.trimmingCharacters(in: .whitespacesAndNewlines)
         case .uppercase: original.uppercased()
         case .lowercase: original.lowercased()
@@ -342,7 +345,7 @@ final class HyperdeckController: ObservableObject {
 
     func clearClipboardHistory() {
         clipboardItems.removeAll()
-        selectedClipboardIndex = 0
+        selectedClipboardItemID = nil
         statusMessage = "In-memory Clipboard Deck history cleared."
     }
 
@@ -395,8 +398,13 @@ final class HyperdeckController: ObservableObject {
     }
 
     var selectedClipboardItem: HyperdeckClipboardItem? {
-        guard clipboardItems.indices.contains(selectedClipboardIndex) else { return nil }
-        return clipboardItems[selectedClipboardIndex]
+        guard let selectedClipboardItemIndex else { return nil }
+        return clipboardItems[selectedClipboardItemIndex]
+    }
+
+    private var selectedClipboardItemIndex: Int? {
+        guard let selectedClipboardItemID else { return nil }
+        return clipboardItems.firstIndex { $0.id == selectedClipboardItemID }
     }
 
     private func process(_ gestures: [HyperdeckGesture]) {
@@ -597,7 +605,7 @@ final class HyperdeckController: ObservableObject {
         guard clipboardItems.first?.text != bounded else { return }
         clipboardItems.insert(HyperdeckClipboardItem(capturedAt: Date(), text: bounded), at: 0)
         if clipboardItems.count > 20 { clipboardItems.removeLast(clipboardItems.count - 20) }
-        selectedClipboardIndex = 0
+        selectedClipboardItemID = clipboardItems[0].id
         statusMessage = "Clipboard Deck captured a new text item in memory."
     }
 

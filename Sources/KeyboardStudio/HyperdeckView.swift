@@ -14,7 +14,7 @@ private enum HyperdeckPage: String, CaseIterable, Identifiable {
 }
 
 struct HyperdeckStudioView: View {
-    @ObservedObject var controller: HyperdeckController
+    let controller: HyperdeckController
     @AppStorage("selectedHyperdeckPage") private var pageRawValue = HyperdeckPage.dashboard.rawValue
 
     private var page: HyperdeckPage {
@@ -24,23 +24,7 @@ struct HyperdeckStudioView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Label("Two-Key Hyperdeck", systemImage: "rectangle.2.swap")
-                        .font(.title.bold())
-                    Text("Ten gestures · smart profiles · permission-safe native actions")
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 3) {
-                    Label(controller.activeProfile?.name ?? "No profile", systemImage: "circle.fill")
-                        .foregroundStyle(.purple)
-                    Text(controller.activeApplicationName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(24)
+            HyperdeckHeader(controller: controller)
 
             Picker("Hyperdeck page", selection: Binding(
                 get: { page },
@@ -67,6 +51,30 @@ struct HyperdeckStudioView: View {
             }
         }
         .navigationTitle("Hyperdeck")
+    }
+}
+
+private struct HyperdeckHeader: View {
+    @ObservedObject var controller: HyperdeckController
+
+    var body: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Two-Key Hyperdeck", systemImage: "rectangle.2.swap")
+                    .font(.title.bold())
+                Text("Ten gestures · smart profiles · permission-safe native actions")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 3) {
+                Label(controller.activeProfile?.name ?? "No profile", systemImage: "circle.fill")
+                    .foregroundStyle(.purple)
+                Text(controller.activeApplicationName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(24)
     }
 }
 
@@ -384,7 +392,7 @@ private struct HyperdeckRecipeEditor: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                ForEach(draft.recipe.steps.indices, id: \.self) { index in
+                ForEach(Array(draft.recipe.steps.enumerated()), id: \.element.id) { index, _ in
                     actionStepEditor(index)
                 }
 
@@ -524,13 +532,13 @@ private struct HyperdeckClipboardView: View {
             Divider()
 
             HSplitView {
-                List(controller.clipboardItems.indices, id: \.self, selection: $controller.selectedClipboardIndex) { index in
+                List(controller.clipboardItems, selection: $controller.selectedClipboardItemID) { item in
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(controller.clipboardItems[index].text).lineLimit(2)
-                        Text(controller.clipboardItems[index].capturedAt, style: .time)
+                        Text(item.text).lineLimit(2)
+                        Text(item.capturedAt, style: .time)
                             .font(.caption2).foregroundStyle(.secondary)
                     }
-                    .tag(index)
+                    .tag(item.id)
                 }
                 .frame(minWidth: 280)
 

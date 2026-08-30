@@ -47,20 +47,24 @@ enum ScriptPreset: String, CaseIterable, Identifiable {
     }
 }
 
+private struct ExtendedDeviceConfiguration: Equatable {
+    var lighting: [SayoLightingV2Configuration] = []
+    var colorTables: [SayoIndexedRecord] = []
+    var scriptSlots: [SayoNamedSlot] = []
+    var scriptImage: [UInt8] = []
+    var passwordSlots: [SayoNamedSlot] = []
+    var stringSlots: [SayoIndexedRecord] = []
+    var deviceName = ""
+    var identity: SayoDeviceIdentityConfiguration?
+    var message = "Connect the keyboard to load its full configuration."
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     let hyperdeck: HyperdeckController
     @Published var deviceSnapshot: SayoDeviceSnapshot?
     @Published var editableButtons: [SayoButtonConfiguration]
-    @Published var lightingConfigurations: [SayoLightingV2Configuration] = []
-    @Published var colorTables: [SayoIndexedRecord] = []
-    @Published var scriptSlots: [SayoNamedSlot] = []
-    @Published var scriptImage: [UInt8] = []
-    @Published var passwordSlots: [SayoNamedSlot] = []
-    @Published var stringSlots: [SayoIndexedRecord] = []
-    @Published var editableDeviceName = ""
-    @Published var deviceIdentityConfiguration: SayoDeviceIdentityConfiguration?
-    @Published var configurationMessage = "Connect the keyboard to load its full configuration."
+    @Published private var extendedDeviceConfiguration = ExtendedDeviceConfiguration()
     @Published var secretsAreLoaded = false
     @Published var includeSecretsInBackup = false
     @Published var selectedPasswordSlot = 0
@@ -84,6 +88,59 @@ final class AppModel: ObservableObject {
     @Published var deckMessage = "Codex Deck is ready for new activity."
     @Published var selectedCodexReviewActivityID: String?
     @Published private(set) var deckPresses: [CodexDeckPress] = []
+
+    var lightingConfigurations: [SayoLightingV2Configuration] {
+        get { extendedDeviceConfiguration.lighting }
+        set { setExtendedDeviceConfiguration(\.lighting, to: newValue) }
+    }
+
+    var colorTables: [SayoIndexedRecord] {
+        get { extendedDeviceConfiguration.colorTables }
+        set { setExtendedDeviceConfiguration(\.colorTables, to: newValue) }
+    }
+
+    var scriptSlots: [SayoNamedSlot] {
+        get { extendedDeviceConfiguration.scriptSlots }
+        set { setExtendedDeviceConfiguration(\.scriptSlots, to: newValue) }
+    }
+
+    var scriptImage: [UInt8] {
+        get { extendedDeviceConfiguration.scriptImage }
+        set { setExtendedDeviceConfiguration(\.scriptImage, to: newValue) }
+    }
+
+    var passwordSlots: [SayoNamedSlot] {
+        get { extendedDeviceConfiguration.passwordSlots }
+        set { setExtendedDeviceConfiguration(\.passwordSlots, to: newValue) }
+    }
+
+    var stringSlots: [SayoIndexedRecord] {
+        get { extendedDeviceConfiguration.stringSlots }
+        set { setExtendedDeviceConfiguration(\.stringSlots, to: newValue) }
+    }
+
+    var editableDeviceName: String {
+        get { extendedDeviceConfiguration.deviceName }
+        set { setExtendedDeviceConfiguration(\.deviceName, to: newValue) }
+    }
+
+    var deviceIdentityConfiguration: SayoDeviceIdentityConfiguration? {
+        get { extendedDeviceConfiguration.identity }
+        set { setExtendedDeviceConfiguration(\.identity, to: newValue) }
+    }
+
+    var configurationMessage: String {
+        get { extendedDeviceConfiguration.message }
+        set { setExtendedDeviceConfiguration(\.message, to: newValue) }
+    }
+
+    private func setExtendedDeviceConfiguration<Value: Equatable>(
+        _ keyPath: WritableKeyPath<ExtendedDeviceConfiguration, Value>,
+        to value: Value
+    ) {
+        guard extendedDeviceConfiguration[keyPath: keyPath] != value else { return }
+        extendedDeviceConfiguration[keyPath: keyPath] = value
+    }
 
     private let deviceService = SayoDeviceService()
     private let activityService = CodexActivityService()
@@ -476,17 +533,21 @@ final class AppModel: ObservableObject {
                 throw SayoProtocolError.invalidPacket("backup model does not match the connected keyboard")
             }
             editableButtons = backup.buttons
-            lightingConfigurations = backup.lighting
-            colorTables = backup.colorTables
-            scriptSlots = backup.scriptNames
-            scriptImage = backup.scriptImage
-            editableDeviceName = backup.deviceName
-            stringSlots = backup.strings
+            var importedConfiguration = extendedDeviceConfiguration
+            importedConfiguration.lighting = backup.lighting
+            importedConfiguration.colorTables = backup.colorTables
+            importedConfiguration.scriptSlots = backup.scriptNames
+            importedConfiguration.scriptImage = backup.scriptImage
+            importedConfiguration.deviceName = backup.deviceName
+            importedConfiguration.stringSlots = backup.strings
             if let passwords = backup.passwords {
-                passwordSlots = passwords
+                importedConfiguration.passwordSlots = passwords
                 secretsAreLoaded = true
             }
-            configurationMessage = "Backup imported and staged. Review each page, then use its Save button to apply."
+            importedConfiguration.message = "Backup imported and staged. Review each page, then use its Save button to apply."
+            if extendedDeviceConfiguration != importedConfiguration {
+                extendedDeviceConfiguration = importedConfiguration
+            }
         } catch {
             configurationMessage = "Backup import failed: \(error.localizedDescription)"
         }
@@ -744,34 +805,38 @@ final class AppModel: ObservableObject {
     }
 
     private func loadExtendedConfiguration(for snapshot: SayoDeviceSnapshot) async {
+        var loadedConfiguration = extendedDeviceConfiguration
         do {
             if snapshot.supportedCommands.contains(0x10) {
-                lightingConfigurations = try await [
+                loadedConfiguration.lighting = try await [
                     deviceService.readLightingV2(number: 0),
                     deviceService.readLightingV2(number: 1),
                 ]
             }
             if snapshot.supportedCommands.contains(0x11) {
-                colorTables = try await deviceService.readIndexedRecords(command: 0x11, limit: 6)
+                loadedConfiguration.colorTables = try await deviceService.readIndexedRecords(command: 0x11, limit: 6)
             }
             if snapshot.supportedCommands.contains(0x08) {
-                editableDeviceName = try await deviceService.readDeviceName()
+                loadedConfiguration.deviceName = try await deviceService.readDeviceName()
             }
             if snapshot.supportedCommands.contains(0xFE) {
-                deviceIdentityConfiguration = try await deviceService.readDeviceIdentityConfiguration()
+                loadedConfiguration.identity = try await deviceService.readDeviceIdentityConfiguration()
             }
             if snapshot.supportedCommands.contains(0xF1) {
-                scriptSlots = try await deviceService.readNamedSlots(command: 0xF1, limit: 2)
+                loadedConfiguration.scriptSlots = try await deviceService.readNamedSlots(command: 0xF1, limit: 2)
             }
             if snapshot.supportedCommands.contains(0xF0) {
-                scriptImage = try await deviceService.readRawScriptImage()
+                loadedConfiguration.scriptImage = try await deviceService.readRawScriptImage()
             }
             if snapshot.supportedCommands.contains(0x0C) {
-                stringSlots = try await deviceService.readIndexedRecords(command: 0x0C, limit: 16)
+                loadedConfiguration.stringSlots = try await deviceService.readIndexedRecords(command: 0x0C, limit: 16)
             }
-            configurationMessage = "Loaded keys, lighting, palettes, scripts, strings, and device settings from the keyboard."
+            loadedConfiguration.message = "Loaded keys, lighting, palettes, scripts, strings, and device settings from the keyboard."
         } catch {
-            configurationMessage = "The basic key map loaded, but an extended feature failed: \(error.localizedDescription)"
+            loadedConfiguration.message = "The basic key map loaded, but an extended feature failed: \(error.localizedDescription)"
+        }
+        if extendedDeviceConfiguration != loadedConfiguration {
+            extendedDeviceConfiguration = loadedConfiguration
         }
     }
 

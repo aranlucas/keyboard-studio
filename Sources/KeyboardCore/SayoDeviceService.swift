@@ -17,7 +17,7 @@ public enum SayoDeviceServiceError: Error, LocalizedError, Sendable {
     }
 }
 
-public enum SayoKeyboardAccessStatus: Int, Sendable {
+public enum SayoKeyboardAccessStatus: Int, Equatable, Sendable {
     case granted = 0
     case denied = 1
     case unknown = 2
@@ -447,7 +447,7 @@ public actor SayoDeviceService {
 
     private func transact(_ packet: SayoPacket) throws -> SayoPacket {
         let output = try packet.encoded()
-        Self.logger.notice(
+        Self.logger.debug(
             "HID TX command=\(Int(packet.command), privacy: .public) payloadLength=\(packet.payload.count, privacy: .public)"
         )
         var input = [UInt8](repeating: 0, count: SayoPacket.reportLength)
@@ -488,7 +488,7 @@ public actor SayoDeviceService {
             let trailerIndex = 3 + response.payload.count
             let trailer = trailerIndex < responseBytes.count ? responseBytes[trailerIndex] : 0
             if response.command == 0 {
-                Self.logger.notice(
+                Self.logger.debug(
                     "HID RX requestCommand=\(Int(packet.command), privacy: .public) status=0 payloadLength=\(response.payload.count, privacy: .public) trailer=\(Int(trailer), privacy: .public)"
                 )
             } else {

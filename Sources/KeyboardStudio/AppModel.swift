@@ -96,6 +96,7 @@ final class AppModel: ObservableObject {
     private var appliedLampFrame: CodexLampFrame?
     private var hyperdeckLampOverride: CodexLampFrame?
     private var profileFlashTask: Task<Void, Never>?
+    private var studioWindowOpener: (() -> Void)?
 
     private static let acknowledgedTimestampKey = "codexDeckAcknowledgedAt"
     private static let runtimeAcknowledgedTimestampKey = "codexDeckRuntimeAcknowledgedAt"
@@ -134,7 +135,7 @@ final class AppModel: ObservableObject {
                 let interval = max(5, storedInterval ?? 15)
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled, let self else { return }
-                await self.refreshActivities(notifyNew: true)
+                await self.refreshActivities(notifyNew: true, showsLoading: false)
             }
         }
     }
@@ -144,7 +145,10 @@ final class AppModel: ObservableObject {
         isLoadingDevice = true
         defer { isLoadingDevice = false }
 
-        keyboardAccessStatus = await deviceService.accessStatus()
+        let accessStatus = await deviceService.accessStatus()
+        if keyboardAccessStatus != accessStatus {
+            keyboardAccessStatus = accessStatus
+        }
 
         do {
             let snapshot = try await deviceService.readSnapshot()
@@ -158,6 +162,27 @@ final class AppModel: ObservableObject {
         } catch {
             deviceSnapshot = nil
             deviceMessage = error.localizedDescription
+        }
+    }
+
+    /// Activation only needs to detect a newly connected or disconnected pad.
+    /// A full configuration reload is intentionally reserved for launch and the
+    /// explicit Refresh button because it performs dozens of HID transactions.
+    func refreshDevicePresence() async {
+        let accessStatus = await deviceService.accessStatus()
+        if keyboardAccessStatus != accessStatus {
+            keyboardAccessStatus = accessStatus
+        }
+        guard accessStatus == .granted else { return }
+
+        let isPresent = await deviceService.isPresent()
+        if isPresent {
+            if deviceSnapshot == nil {
+                await refreshDevice()
+            }
+        } else if deviceSnapshot != nil {
+            deviceSnapshot = nil
+            deviceMessage = "The second keyboard was disconnected."
         }
     }
 
@@ -488,17 +513,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func refreshActivities(notifyNew: Bool = false) async {
-        isLoadingActivities = true
-        defer { isLoadingActivities = false }
+    func refreshActivities(notifyNew: Bool = false, showsLoading: Bool = true) async {
+        if showsLoading { isLoadingActivities = true }
+        defer {
+            if showsLoading { isLoadingActivities = false }
+        }
 
         do {
             let refreshed = try await activityService.recent()
             let refreshedRuntimeStatus = await activityService.runtimeStatus()
             let previousTimestamp = latestActivityTimestamp
-            activities = refreshed
-            runtimeStatus = refreshedRuntimeStatus
-            activeCodexTaskCount = refreshedRuntimeStatus.activeTaskCount
+            if activities != refreshed { activities = refreshed }
+            if runtimeStatus != refreshedRuntimeStatus { runtimeStatus = refreshedRuntimeStatus }
+            if activeCodexTaskCount != refreshedRuntimeStatus.activeTaskCount {
+                activeCodexTaskCount = refreshedRuntimeStatus.activeTaskCount
+            }
             latestActivityTimestamp = refreshed.map(\.updatedAt).max()
             if !hasLoadedActivities,
                UserDefaults.standard.object(forKey: Self.acknowledgedTimestampKey) == nil,
@@ -512,24 +541,29 @@ final class AppModel: ObservableObject {
             {
                 setRuntimeAcknowledgedTimestamp(latestRuntimeTimestamp)
             }
-            unreadActivityCount = refreshed.filter { $0.updatedAt > acknowledgedTimestamp }.count
-            codexTaskWasInterrupted = (refreshedRuntimeStatus.lastInterruptedAt ?? 0) > runtimeAcknowledgedTimestamp
+            let refreshedUnreadCount = refreshed.filter { $0.updatedAt > acknowledgedTimestamp }.count
+            if unreadActivityCount != refreshedUnreadCount { unreadActivityCount = refreshedUnreadCount }
+            let wasInterrupted = (refreshedRuntimeStatus.lastInterruptedAt ?? 0) > runtimeAcknowledgedTimestamp
+            if codexTaskWasInterrupted != wasInterrupted { codexTaskWasInterrupted = wasInterrupted }
+            let refreshedDeckMessage: String
             if activeCodexTaskCount > 0, hasCodexAttentionWaiting {
-                deckMessage = "Codex is working on \(activeCodexTaskCount) \(activeCodexTaskCount == 1 ? "task" : "tasks") · another result is waiting."
+                refreshedDeckMessage = "Codex is working on \(activeCodexTaskCount) \(activeCodexTaskCount == 1 ? "task" : "tasks") · another result is waiting."
             } else if activeCodexTaskCount > 0 {
-                deckMessage = "Codex is working on \(activeCodexTaskCount) \(activeCodexTaskCount == 1 ? "task" : "tasks")."
+                refreshedDeckMessage = "Codex is working on \(activeCodexTaskCount) \(activeCodexTaskCount == 1 ? "task" : "tasks")."
             } else if codexTaskWasInterrupted {
-                deckMessage = "A Codex task stopped and needs attention."
+                refreshedDeckMessage = "A Codex task stopped and needs attention."
             } else if hasCodexAttentionWaiting {
-                deckMessage = "A Codex result is ready."
+                refreshedDeckMessage = "A Codex result is ready."
             } else {
-                deckMessage = supportsRGBLighting
+                refreshedDeckMessage = supportsRGBLighting
                     ? "All caught up. The status lamp is watching Codex."
                     : "All caught up."
             }
-            activityMessage = refreshed.isEmpty
+            if deckMessage != refreshedDeckMessage { deckMessage = refreshedDeckMessage }
+            let refreshedActivityMessage = refreshed.isEmpty
                 ? "No local Codex summaries yet."
                 : "Watching \(refreshed.count) recent task summaries"
+            if activityMessage != refreshedActivityMessage { activityMessage = refreshedActivityMessage }
 
             if notifyNew, hasLoadedActivities, let previousTimestamp {
                 let newActivities = refreshed
@@ -599,9 +633,18 @@ final class AppModel: ObservableObject {
     }
 
     func showKeyboardStudio() {
+        studioWindowOpener?()
         NSApplication.shared.activate(ignoringOtherApps: true)
-        NSApplication.shared.windows.first(where: { $0.title.contains("Keyboard Studio") || $0.title == "Hyperdeck" })?
-            .makeKeyAndOrderFront(nil)
+        Task { @MainActor in
+            await Task.yield()
+            NSApplication.shared.windows.first(where: {
+                $0.title.contains("Keyboard Studio") || $0.title == "Hyperdeck"
+            })?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    func installStudioWindowOpener(_ opener: @escaping () -> Void) {
+        studioWindowOpener = opener
     }
 
     func selectNextCodexReview() {

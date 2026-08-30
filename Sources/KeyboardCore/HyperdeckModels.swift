@@ -102,9 +102,9 @@ public struct HyperdeckGestureTiming: Codable, Equatable, Sendable {
     }
 }
 
-/// Pure, monotonic-time state machine. Runtime code supplies periodic `flush`
-/// calls so holds fire while a key remains down and single taps wait long enough
-/// to distinguish double taps and ordered sequences.
+/// Pure, monotonic-time state machine. Runtime code sleeps until `nextDeadline`
+/// and then calls `flush(at:)`, allowing holds and deferred taps to fire without
+/// a continuously polling timer.
 public struct HyperdeckGestureRecognizer: Sendable {
     public var timing: HyperdeckGestureTiming
 
@@ -209,6 +209,25 @@ public struct HyperdeckGestureRecognizer: Sendable {
             self.pendingTap = nil
         }
         return gestures
+    }
+
+    /// The next monotonic timestamp at which `flush(at:)` can emit a gesture.
+    /// Runtime clients can sleep until this deadline instead of polling.
+    public var nextDeadline: TimeInterval? {
+        var deadlines: [TimeInterval] = []
+
+        if let chordStartedAt, !chordWasEmitted {
+            deadlines.append(chordStartedAt + timing.bothHoldThreshold)
+        } else if chordStartedAt == nil {
+            deadlines.append(contentsOf: downSince.compactMap { key, pressedAt in
+                emittedHolds.contains(key) ? nil : pressedAt + timing.holdThreshold
+            })
+        }
+
+        if downSince.isEmpty, let pendingTap {
+            deadlines.append(pendingTap.releasedAt + timing.sequenceWindow)
+        }
+        return deadlines.min()
     }
 
     public mutating func reset() {

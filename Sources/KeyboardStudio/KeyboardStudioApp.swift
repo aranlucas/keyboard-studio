@@ -5,7 +5,7 @@ struct KeyboardStudioApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup("Keyboard Studio", id: "studio") {
+        Window("Keyboard Studio", id: "studio") {
             ContentView(model: model)
                 .frame(minWidth: 980, minHeight: 650)
         }

@@ -91,7 +91,8 @@ final class HyperdeckController: ObservableObject {
 
     private var recognizer: HyperdeckGestureRecognizer
     private var hotKeyController: HyperdeckHotKeyController?
-    private var gestureTickTask: Task<Void, Never>?
+    private var gestureDeadlineTask: Task<Void, Never>?
+    private var focusTickTask: Task<Void, Never>?
     private var clipboardTask: Task<Void, Never>?
     private var workspaceObserver: NSObjectProtocol?
     private var focusEndsAt: Date?
@@ -121,7 +122,8 @@ final class HyperdeckController: ObservableObject {
     }
 
     isolated deinit {
-        gestureTickTask?.cancel()
+        gestureDeadlineTask?.cancel()
+        focusTickTask?.cancel()
         clipboardTask?.cancel()
         if let workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
@@ -155,15 +157,6 @@ final class HyperdeckController: ObservableObject {
             activate(application)
         }
 
-        gestureTickTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(25))
-                guard !Task.isCancelled, let self else { return }
-                let now = ProcessInfo.processInfo.systemUptime
-                self.process(self.recognizer.flush(at: now))
-                await self.updateFocusClock()
-            }
-        }
         synchronizeClipboardMonitoring()
     }
 
@@ -178,6 +171,7 @@ final class HyperdeckController: ObservableObject {
             "Physical key=\(event.key.rawValue, privacy: .public) phase=\(event.phase.rawValue, privacy: .public)"
         )
         process(recognizer.handle(event))
+        scheduleGestureDeadline()
     }
 
     func replaceConfiguration(_ configuration: HyperdeckConfiguration) {
@@ -186,6 +180,7 @@ final class HyperdeckController: ObservableObject {
         configuration.focusMinutes = min(max(configuration.focusMinutes, 1), 180)
         self.configuration = configuration
         recognizer.updateTiming(configuration.timing)
+        scheduleGestureDeadline()
         if !configuration.profiles.contains(where: { $0.id == selectedProfileID }) {
             selectedProfileID = configuration.profiles.first?.id
         }
@@ -373,6 +368,7 @@ final class HyperdeckController: ObservableObject {
             statusMessage = "Focus session started."
         }
         lastPublishedFocusSecond = nil
+        synchronizeFocusTicking()
         Task { [state = focusState, weak self] in await self?.onFocusChanged?(state) }
         record("Focus timer \(focusState.isRunning ? "started" : "paused")", detail: formattedFocusTime)
     }
@@ -384,6 +380,7 @@ final class HyperdeckController: ObservableObject {
         focusState.isRunning = false
         focusEndsAt = nil
         lastPublishedFocusSecond = nil
+        synchronizeFocusTicking()
         statusMessage = "Focus timer reset to \(configuration.focusMinutes) minutes."
         Task { [state = focusState, weak self] in await self?.onFocusChanged?(state) }
     }
@@ -544,6 +541,39 @@ final class HyperdeckController: ObservableObject {
         UserDefaults.standard.set(data, forKey: Self.configurationKey)
     }
 
+    private func scheduleGestureDeadline() {
+        gestureDeadlineTask?.cancel()
+        gestureDeadlineTask = nil
+        guard let deadline = recognizer.nextDeadline else { return }
+
+        let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+        gestureDeadlineTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            self.gestureDeadlineTask = nil
+            self.process(self.recognizer.flush(at: ProcessInfo.processInfo.systemUptime))
+            self.scheduleGestureDeadline()
+        }
+    }
+
+    private func synchronizeFocusTicking() {
+        focusTickTask?.cancel()
+        focusTickTask = nil
+        guard focusState.isRunning else { return }
+
+        focusTickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self else { return }
+                await self.updateFocusClock()
+                guard self.focusState.isRunning else {
+                    self.focusTickTask = nil
+                    return
+                }
+            }
+        }
+    }
+
     private func synchronizeClipboardMonitoring() {
         clipboardTask?.cancel()
         clipboardTask = nil
@@ -551,7 +581,7 @@ final class HyperdeckController: ObservableObject {
         captureClipboardIfChanged()
         clipboardTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(600))
+                try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled, let self else { return }
                 self.captureClipboardIfChanged()
             }

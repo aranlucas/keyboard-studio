@@ -195,12 +195,17 @@ do {
 
     var leftTap = HyperdeckGestureRecognizer()
     try check(leftTap.handle(event(.left, .down, 0)).isEmpty, "left-tap recognizer emitted on key down")
+    try check(abs((leftTap.nextDeadline ?? 0) - 0.45) < 0.001, "left hold deadline was not scheduled")
     try check(leftTap.handle(event(.left, .up, 0.05)).isEmpty, "left-tap recognizer did not wait for double-tap ambiguity")
+    try check(abs((leftTap.nextDeadline ?? 0) - 0.30) < 0.001, "deferred left tap deadline was not scheduled")
     try check(leftTap.flush(at: 0.31) == [.leftTap], "left tap was not emitted after the sequence window")
+    try check(leftTap.nextDeadline == nil, "left tap left an unnecessary timer deadline")
 
     var rightHold = HyperdeckGestureRecognizer()
     _ = rightHold.handle(event(.right, .down, 1))
+    try check(abs((rightHold.nextDeadline ?? 0) - 1.45) < 0.001, "right hold deadline was not scheduled")
     try check(rightHold.flush(at: 1.46) == [.rightHold], "right hold was not emitted while the key remained down")
+    try check(rightHold.nextDeadline == nil, "emitted right hold left an unnecessary timer deadline")
     try check(rightHold.handle(event(.right, .up, 1.6)).isEmpty, "right hold was emitted twice on release")
 
     var leftDoubleTap = HyperdeckGestureRecognizer()
@@ -224,6 +229,7 @@ do {
     var bothHold = HyperdeckGestureRecognizer()
     _ = bothHold.handle(event(.left, .down, 5))
     _ = bothHold.handle(event(.right, .down, 5.04))
+    try check(abs((bothHold.nextDeadline ?? 0) - 6.5) < 0.001, "both-key hold deadline was not scheduled")
     try check(bothHold.flush(at: 6.55) == [.bothHold], "both-key hold did not fire at its threshold")
     _ = bothHold.handle(event(.left, .up, 6.6))
     try check(bothHold.handle(event(.right, .up, 6.62)).isEmpty, "both-key hold was emitted twice on release")

@@ -35,6 +35,7 @@ enum StudioSection: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @ObservedObject var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openWindow) private var openWindow
     @AppStorage("selectedStudioSection") private var selectedSectionRaw = StudioSection.keyboard.rawValue
 
     private var selectedSection: StudioSection {
@@ -92,9 +93,14 @@ struct ContentView: View {
             }
         }
         .task { await model.start() }
+        .onAppear {
+            model.installStudioWindowOpener {
+                openWindow(id: "studio")
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
-            Task { await model.refreshDevice() }
+            Task { await model.refreshDevicePresence() }
         }
         .onOpenURL { model.hyperdeck.handleDeepLink($0) }
     }

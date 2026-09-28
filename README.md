@@ -7,7 +7,7 @@
 
 Keyboard Studio is a native macOS SwiftUI configurator and Codex status deck for the SayoDevice O2L V2. Plug in the pad, stage a layer of shortcuts and macros, add a Codex Deck, and save only when the configuration looks right. The app reads the device over macOS IOKit HID and keeps edits reviewable before writing them.
 
-![Keyboard Studio app icon](Assets/KeyboardStudio-AppIcon-1024.png)
+<p><img src="Assets/KeyboardStudio-AppIcon-1024.png" width="160" alt="Keyboard Studio app icon" /></p>
 
 The app is intentionally hardware-specific. The current HID bridge matches the SayoDevice O2L V2 vendor interface; it is not a general-purpose keyboard remapper.
 

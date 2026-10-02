@@ -29,6 +29,13 @@ private struct CodexLampFrame: Equatable {
     let button2: CodexLampColor
 
     static let off = CodexLampFrame(button1: .off, button2: .off)
+
+    var statusLights: [SayoStatusLight] {
+        self == .off ? [] : [
+            SayoStatusLight(number: 0, red: button1.red, green: button1.green, blue: button1.blue),
+            SayoStatusLight(number: 1, red: button2.red, green: button2.green, blue: button2.blue),
+        ]
+    }
 }
 
 enum ScriptPreset: String, CaseIterable, Identifiable {
@@ -149,7 +156,6 @@ final class AppModel: ObservableObject {
     private var hasStarted = false
     private var activityPollingTask: Task<Void, Never>?
     private var runtimeStatus = CodexRuntimeStatus()
-    private var originalLighting: [SayoLightingV2Configuration]?
     private var appliedLampFrame: CodexLampFrame?
     private var hyperdeckLampOverride: CodexLampFrame?
     private var profileFlashTask: Task<Void, Never>?
@@ -199,7 +205,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshDevice() async {
-        guard !isLoadingDevice else { return }
+        guard !isLoadingDevice, !isSaving else { return }
         isLoadingDevice = true
         defer { isLoadingDevice = false }
 
@@ -211,11 +217,13 @@ final class AppModel: ObservableObject {
         do {
             let snapshot = try await deviceService.readSnapshot()
             deviceSnapshot = snapshot
+            appliedLampFrame = nil
             editableButtons = snapshot.buttons
             selectedLayer = min(selectedLayer, max(0, availableLayerCount - 1))
             await loadExtendedConfiguration(for: snapshot)
             let version = snapshot.firmwareVersion.map { String(format: "0x%04X", $0) } ?? "unknown"
             deviceMessage = "Connected · firmware \(version) · \(snapshot.buttons.count) buttons"
+            isLoadingDevice = false
             await synchronizeCodexStatusLamp()
         } catch {
             deviceSnapshot = nil
@@ -227,6 +235,7 @@ final class AppModel: ObservableObject {
     /// A full configuration reload is intentionally reserved for launch and the
     /// explicit Refresh button because it performs dozens of HID transactions.
     func refreshDevicePresence() async {
+        guard !isSaving, !isLoadingDevice else { return }
         let accessStatus = await deviceService.accessStatus()
         if keyboardAccessStatus != accessStatus {
             keyboardAccessStatus = accessStatus
@@ -291,7 +300,22 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func commit(
+        _ plan: SayoConfigurationPlan, successDeckMessage: String? = nil
+    ) async throws -> SayoConfigurationPlan {
+        guard let snapshot = deviceSnapshot else { throw SayoDeviceServiceError.deviceSelectionRequired }
+        let result = try await deviceService.commitConfiguration(plan, expectedDevice: snapshot)
+        if let warning = result.statusLampWarning {
+            appliedLampFrame = nil
+            deckMessage = "Configuration saved, but the status lamp could not resume: \(warning)"
+        } else if let successDeckMessage {
+            deckMessage = successDeckMessage
+        }
+        return result.verified
+    }
+
     func saveDevice() async {
+        guard !isSaving, !isLoadingDevice else { return }
         guard deviceSnapshot != nil else {
             deviceMessage = "Connect the SayoDevice before saving."
             return
@@ -301,16 +325,17 @@ final class AppModel: ObservableObject {
         deviceMessage = "Writing and verifying both buttons…"
         defer { isSaving = false }
         do {
-            let verified = try await deviceService.writeAndSave(buttons: editableButtons)
+            let verified = try await commit(SayoConfigurationPlan(buttons: editableButtons)).buttons
             editableButtons = verified
             deviceMessage = "Saved to keyboard flash and verified."
-            await refreshDevice()
+            deviceSnapshot?.buttons = verified
         } catch {
             deviceMessage = "Save failed without completing: \(error.localizedDescription)"
         }
     }
 
     func saveLighting() async {
+        guard !isSaving, !isLoadingDevice else { return }
         guard supportsRGBLighting else {
             configurationMessage = "This firmware does not advertise Lighting v2."
             return
@@ -318,32 +343,21 @@ final class AppModel: ObservableObject {
         isSaving = true
         defer { isSaving = false }
         do {
-            try await restoreOriginalLightingIfNeeded()
-            var verified: [SayoLightingV2Configuration] = []
-            for configuration in lightingConfigurations {
-                verified.append(try await deviceService.writeLightingV2(configuration))
-            }
-            try await deviceService.saveToFlash()
-            lightingConfigurations = verified
-            originalLighting = verified
-            appliedLampFrame = nil
+            let verified = try await commit(SayoConfigurationPlan(lighting: lightingConfigurations))
+            lightingConfigurations = verified.lighting
             configurationMessage = "Lighting effects saved to flash and verified."
-            await synchronizeCodexStatusLamp(force: true)
         } catch {
             configurationMessage = "Lighting was not saved: \(error.localizedDescription)"
         }
     }
 
     func saveColorTables() async {
+        guard !isSaving, !isLoadingDevice else { return }
         isSaving = true
         defer { isSaving = false }
         do {
-            var verified: [SayoIndexedRecord] = []
-            for record in colorTables {
-                verified.append(try await deviceService.writeIndexedRecord(command: 0x11, record: record))
-            }
-            try await deviceService.saveToFlash()
-            colorTables = verified
+            let verified = try await commit(SayoConfigurationPlan(colorTables: colorTables))
+            colorTables = verified.colorTables
             configurationMessage = "All six color tables were saved and verified."
         } catch {
             configurationMessage = "Color tables were not saved: \(error.localizedDescription)"
@@ -351,11 +365,12 @@ final class AppModel: ObservableObject {
     }
 
     func saveDeviceName() async {
+        guard !isSaving, !isLoadingDevice else { return }
         isSaving = true
         defer { isSaving = false }
         do {
-            editableDeviceName = try await deviceService.writeDeviceName(editableDeviceName)
-            try await deviceService.saveToFlash()
+            let verified = try await commit(SayoConfigurationPlan(deviceName: editableDeviceName))
+            editableDeviceName = verified.deviceName ?? editableDeviceName
             configurationMessage = "Device name saved. Reconnect the keyboard if macOS still shows the old name."
         } catch {
             configurationMessage = "Device name was not saved: \(error.localizedDescription)"
@@ -363,6 +378,7 @@ final class AppModel: ObservableObject {
     }
 
     func loadSecrets() async {
+        guard !isSaving, !isLoadingDevice else { return }
         guard deviceSnapshot?.supportedCommands.contains(0x0B) == true else {
             configurationMessage = "This firmware does not advertise password slots."
             return
@@ -379,6 +395,7 @@ final class AppModel: ObservableObject {
     }
 
     func savePasswords() async {
+        guard !isSaving, !isLoadingDevice else { return }
         guard secretsAreLoaded else {
             configurationMessage = "Load the password slots before editing them."
             return
@@ -390,10 +407,10 @@ final class AppModel: ObservableObject {
         isSaving = true
         defer { isSaving = false }
         do {
-            let verified = try await deviceService.writePasswordSlot(passwordSlots[selectedPasswordSlot])
-            try await deviceService.saveToFlash()
-            passwordSlots[selectedPasswordSlot] = verified
-            configurationMessage = "Password slot \(selectedPasswordSlot + 1) saved and read back."
+            let index = selectedPasswordSlot
+            let verified = try await commit(SayoConfigurationPlan(passwords: [passwordSlots[index]]))
+            passwordSlots[index] = verified.passwords[0]
+            configurationMessage = "Password slot \(index + 1) saved and read back."
         } catch {
             configurationMessage = "Passwords were not saved: \(error.localizedDescription)"
         }
@@ -431,6 +448,7 @@ final class AppModel: ObservableObject {
     }
 
     func saveStrings() async {
+        guard !isSaving, !isLoadingDevice else { return }
         guard stringSlots.indices.contains(selectedStringSlot) else {
             configurationMessage = "Select a text slot before saving."
             return
@@ -438,29 +456,22 @@ final class AppModel: ObservableObject {
         isSaving = true
         defer { isSaving = false }
         do {
-            let verified = try await deviceService.writeIndexedRecord(
-                command: 0x0C,
-                record: stringSlots[selectedStringSlot]
-            )
-            try await deviceService.saveToFlash()
-            stringSlots[selectedStringSlot] = verified
-            configurationMessage = "Text slot \(selectedStringSlot + 1) saved and verified."
+            let index = selectedStringSlot
+            let verified = try await commit(SayoConfigurationPlan(strings: [stringSlots[index]]))
+            stringSlots[index] = verified.strings[0]
+            configurationMessage = "Text slot \(index + 1) saved and verified."
         } catch {
             configurationMessage = "Text slots were not saved: \(error.localizedDescription)"
         }
     }
 
     func saveScripts() async {
+        guard !isSaving, !isLoadingDevice else { return }
         isSaving = true
         defer { isSaving = false }
         do {
-            var verifiedNames: [SayoNamedSlot] = []
-            for slot in scriptSlots {
-                verifiedNames.append(try await deviceService.writeNamedSlot(command: 0xF1, slot: slot))
-            }
-            _ = try await deviceService.writeRawScriptImage(scriptImage)
-            try await deviceService.saveToFlash()
-            scriptSlots = verifiedNames
+            let verified = try await commit(SayoConfigurationPlan(scriptSlots: scriptSlots, scriptImage: scriptImage))
+            scriptSlots = verified.scriptSlots
             configurationMessage = "Script names and bytecode saved and verified."
         } catch {
             configurationMessage = "Scripts were not saved: \(error.localizedDescription)"
@@ -574,6 +585,7 @@ final class AppModel: ObservableObject {
     }
 
     func installCodexDeck() async {
+        guard !isSaving, !isLoadingDevice else { return }
         guard deviceSnapshot != nil else {
             deckMessage = "Enable Input Monitoring and reload the SayoDevice before installing Codex Deck."
             return
@@ -585,10 +597,12 @@ final class AppModel: ObservableObject {
 
         do {
             let configured = try CodexDeckProfile.applying(to: editableButtons)
-            let verified = try await deviceService.writeAndSave(buttons: configured)
+            let verified = try await commit(
+                SayoConfigurationPlan(buttons: configured),
+                successDeckMessage: "Codex Deck installed. Button 1 opens Codex; Button 2 clears alerts."
+            ).buttons
             editableButtons = verified
-            deckMessage = "Codex Deck installed. Button 1 opens Codex; Button 2 clears alerts."
-            await refreshDevice()
+            deviceSnapshot?.buttons = verified
         } catch {
             deckMessage = "Codex Deck was not installed: \(error.localizedDescription)"
         }
@@ -748,7 +762,8 @@ final class AppModel: ObservableObject {
     }
 
     func previewCodexDeckLight() async {
-        guard deviceSnapshot != nil else {
+        guard !isLoadingDevice else { return }
+        guard let snapshot = deviceSnapshot else {
             deckMessage = "Connect the SayoDevice before testing its RGB alert."
             return
         }
@@ -757,12 +772,12 @@ final class AppModel: ObservableObject {
             return
         }
         do {
-            try await preserveOriginalLightingIfNeeded()
             let preview = CodexLampFrame(button1: .workingBlue, button2: .attentionRed)
-            try await applyLampFrame(preview)
+            try await deviceService.setStatusFrame(preview.statusLights, expectedDevice: snapshot)
             appliedLampFrame = preview
             deckMessage = "Status lamp preview: Button 1 is working blue; Button 2 is attention red."
         } catch {
+            appliedLampFrame = nil
             deckMessage = "RGB preview failed: \(error.localizedDescription)"
         }
     }
@@ -904,7 +919,7 @@ final class AppModel: ObservableObject {
     }
 
     private func synchronizeCodexStatusLamp(force: Bool = false) async {
-        guard deviceSnapshot != nil, supportsRGBLighting else { return }
+        guard !isLoadingDevice, deviceSnapshot != nil, supportsRGBLighting else { return }
 
         let enabled = UserDefaults.standard.bool(forKey: Self.statusLampEnabledKey)
         let desiredFrame = hyperdeckLampOverride ?? (enabled
@@ -915,52 +930,13 @@ final class AppModel: ObservableObject {
             : .off)
 
         do {
-            if desiredFrame == .off {
-                try await restoreOriginalLightingIfNeeded()
-                return
-            }
-            guard force || appliedLampFrame != desiredFrame else { return }
-            try await preserveOriginalLightingIfNeeded()
-            try await applyLampFrame(desiredFrame)
+            guard force || appliedLampFrame != desiredFrame, let snapshot = deviceSnapshot else { return }
+            try await deviceService.setStatusFrame(desiredFrame.statusLights, expectedDevice: snapshot)
             appliedLampFrame = desiredFrame
         } catch {
+            appliedLampFrame = nil
             deckMessage = "Codex status updated, but the lamp could not sync: \(error.localizedDescription)"
         }
-    }
-
-    private func preserveOriginalLightingIfNeeded() async throws {
-        guard originalLighting == nil else { return }
-        originalLighting = [
-            try await deviceService.readLightingV2(number: 0),
-            try await deviceService.readLightingV2(number: 1),
-        ]
-    }
-
-    private func restoreOriginalLightingIfNeeded() async throws {
-        guard let originalLighting else {
-            appliedLampFrame = nil
-            return
-        }
-        for configuration in originalLighting {
-            try await deviceService.writeLightingV2(configuration)
-        }
-        self.originalLighting = nil
-        appliedLampFrame = nil
-    }
-
-    private func applyLampFrame(_ frame: CodexLampFrame) async throws {
-        try await deviceService.setStaticLighting(
-            number: 0,
-            red: frame.button1.red,
-            green: frame.button1.green,
-            blue: frame.button1.blue
-        )
-        try await deviceService.setStaticLighting(
-            number: 1,
-            red: frame.button2.red,
-            green: frame.button2.green,
-            blue: frame.button2.blue
-        )
     }
 
     private func recordPhysicalPress(_ event: HyperdeckPhysicalEvent) {

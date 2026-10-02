@@ -1,11 +1,11 @@
-import CHIDBridge
 import Foundation
-import OSLog
 
 public enum SayoDeviceServiceError: Error, LocalizedError, Sendable {
     case transport(String)
     case keyboardAccessRequired
     case deviceSelectionRequired
+    case deviceSelectionChanged
+    case configurationRefreshRequired
     case malformedCString
 
     public var errorDescription: String? {
@@ -15,6 +15,8 @@ public enum SayoDeviceServiceError: Error, LocalizedError, Sendable {
             "Keyboard access is required. Grant Input Monitoring, then quit and reopen Keyboard Studio."
         case .deviceSelectionRequired:
             "Refresh the keyboard before reading or writing device settings."
+        case .deviceSelectionChanged: "The selected keyboard changed. Refresh and review the edits before saving."
+        case .configurationRefreshRequired: "Refresh and review the keyboard after the incomplete configuration write."
         case .malformedCString: "The HID device returned malformed identity text."
         }
     }
@@ -98,7 +100,6 @@ public struct SayoLightingV2Configuration: Codable, Equatable, Sendable {
 }
 
 public actor SayoDeviceService {
-    private static let logger = Logger(subsystem: "com.lucas.keyboardstudio", category: "SayoHID")
     public static let vendorID: UInt16 = 0x8089
     public static let productID: UInt16 = 0x000C
     public static let usagePage: UInt32 = 0xFF00
@@ -106,14 +107,21 @@ public actor SayoDeviceService {
 
     private var selectedDevice: DeviceIdentity?
 
-    public init() {}
+    private let transport: any SayoHIDTransport
+    private var originalStatusLighting: [SayoLightingV2Configuration] = []
+    private var statusFrame: [SayoStatusLight] = []
+    private var needsRefreshAfterCommitFailure = false
+
+    public init() { transport = SystemSayoHIDTransport() }
+
+    init(transport: any SayoHIDTransport) { self.transport = transport }
 
     public func accessStatus() -> SayoKeyboardAccessStatus {
-        SayoKeyboardAccessStatus(rawValue: Int(sayo_hid_access_status())) ?? .unknown
+        transport.accessStatus()
     }
 
     public func requestAccess() -> Bool {
-        sayo_hid_request_access() == 1
+        transport.requestAccess()
     }
 
     public func isPresent() -> Bool {
@@ -124,20 +132,36 @@ public actor SayoDeviceService {
     /// A later explicit refresh is required to select another physical device.
     public func clearSelection() {
         selectedDevice = nil
+        originalStatusLighting = []
+        statusFrame = []
     }
 
     public func readSnapshot(buttonCount: Int = 2) throws -> SayoDeviceSnapshot {
         guard (1 ... 16).contains(buttonCount) else {
             throw SayoProtocolError.invalidPacket("button count must be between one and sixteen")
         }
-        selectedDevice = nil
         guard accessStatus() == .granted else {
+            clearSelection()
             throw SayoDeviceServiceError.keyboardAccessRequired
         }
-        let identity = try findDevice()
+        let identity: DeviceIdentity
+        do { identity = try findDevice() } catch {
+            clearSelection()
+            throw error
+        }
         guard !identity.serialNumber.isEmpty else {
+            clearSelection()
             throw SayoDeviceServiceError.deviceSelectionRequired
         }
+        if selectedDevice == identity {
+            // A retry on the same physical device must retain the original
+            // lighting if restoration fails, rather than adopt the lamp as its baseline.
+            do { try restoreStatusLighting() } catch {
+                needsRefreshAfterCommitFailure = true
+                throw error
+            }
+        }
+        clearSelection()
         let initResponse = try transact(makeInitPacket(), boundTo: identity)
         guard initResponse.command == 0 else {
             throw SayoProtocolError.deviceRejected(command: 0, code: initResponse.command)
@@ -178,10 +202,153 @@ public actor SayoDeviceService {
             buttons: buttons
         )
         selectedDevice = identity
+        needsRefreshAfterCommitFailure = false
         return snapshot
     }
 
+    /// One synchronous actor turn owns validation, writes, verification and flash.
+    /// There are deliberately no suspension points: status updates and subsequent
+    /// commits can run only before or after the complete operation.
+    public func commitConfiguration(
+        _ plan: SayoConfigurationPlan, expectedDevice: SayoDeviceSnapshot
+    ) throws -> SayoConfigurationCommitResult {
+        let identity = try requireSelectedDevice()
+        guard identity.matches(expectedDevice) else {
+            throw SayoDeviceServiceError.deviceSelectionChanged
+        }
+        return try commitConfiguration(plan)
+    }
+
+    private func commitConfiguration(_ plan: SayoConfigurationPlan) throws -> SayoConfigurationCommitResult {
+        _ = try requireSelectedDevice()
+        guard !needsRefreshAfterCommitFailure else {
+            throw SayoDeviceServiceError.configurationRefreshRequired
+        }
+        try plan.validate()
+        var verified = plan
+        var verifiedCount = 0
+        var phase = SayoConfigurationCommitError.Phase.restoringLighting
+        let lamp = statusFrame
+        do {
+            try restoreStatusLighting()
+            phase = .writing
+            verified.buttons = []
+            for button in plan.buttons {
+                verified.buttons += try writeButtons([button])
+                verifiedCount += 1
+            }
+            verified.lighting = []
+            for light in plan.lighting {
+                verified.lighting.append(try writeLightingV2(light))
+                verifiedCount += 1
+            }
+            verified.colorTables = []
+            for record in plan.colorTables {
+                verified.colorTables.append(try writeIndexedRecord(command: 0x11, record: record))
+                verifiedCount += 1
+            }
+            verified.scriptSlots = []
+            for slot in plan.scriptSlots {
+                let echoed = try writeNamedSlot(command: 0xF1, slot: slot)
+                guard echoed.number == slot.number,
+                      Array(echoed.rawName.prefix(32)) == Array(slot.name.utf8.prefix(32))
+                        + [UInt8](repeating: 0, count: max(0, 32 - slot.name.utf8.count))
+                else { throw SayoProtocolError.invalidPacket("script name did not verify after writing") }
+                verified.scriptSlots.append(echoed)
+                verifiedCount += 1
+            }
+            if let image = plan.scriptImage {
+                _ = try writeRawScriptImage(image)
+                verifiedCount += 1
+            }
+            verified.passwords = []
+            for slot in plan.passwords {
+                let echoed = try writePasswordSlot(slot)
+                let intended = String(decoding: slot.name.utf8.prefix(57).prefix { $0 != 0 }, as: UTF8.self)
+                guard echoed.number == slot.number, echoed.name == intended else {
+                    throw SayoProtocolError.invalidPacket("password slot did not verify after writing")
+                }
+                verified.passwords.append(echoed)
+                verifiedCount += 1
+            }
+            verified.strings = []
+            for record in plan.strings {
+                verified.strings.append(try writeIndexedRecord(command: 0x0C, record: record))
+                verifiedCount += 1
+            }
+            if let name = plan.deviceName {
+                let echoed = try writeDeviceName(name)
+                let intended = String(decoding: name.utf16.prefix(15).prefix { $0 != 0 }, as: UTF16.self)
+                guard echoed == intended else {
+                    throw SayoProtocolError.invalidPacket("device name did not verify after writing")
+                }
+                verified.deviceName = echoed
+                verifiedCount += 1
+            }
+            phase = .flashing
+            try flashConfiguration()
+        } catch {
+            needsRefreshAfterCommitFailure = true
+            throw SayoConfigurationCommitError(phase: phase, verifiedRecordCount: verifiedCount,
+                                               cause: error.localizedDescription)
+        }
+        // Do not turn a successful flash into an apparent failed save when only
+        // the temporary lamp could not be restored.
+        do {
+            try applyStatusFrame(lamp)
+            return SayoConfigurationCommitResult(verified: verified, statusLampWarning: nil)
+        } catch {
+            return SayoConfigurationCommitResult(verified: verified, statusLampWarning: error.localizedDescription)
+        }
+    }
+
+    /// Compatibility for the probe; application saves use the expected-device interface.
     public func writeAndSave(buttons: [SayoButtonConfiguration]) throws -> [SayoButtonConfiguration] {
+        _ = try requireSelectedDevice()
+        guard !buttons.isEmpty else {
+            throw SayoProtocolError.invalidPacket("button count must be between one and sixteen")
+        }
+        return try commitConfiguration(SayoConfigurationPlan(buttons: buttons)).verified.buttons
+    }
+
+    public func saveToFlash() throws {
+        _ = try commitConfiguration(SayoConfigurationPlan())
+    }
+
+    /// Empty frames restore configured lighting. Frames are always volatile;
+    /// every flash path suspends them until flash has been acknowledged.
+    public func setStatusFrame(_ frame: [SayoStatusLight], expectedDevice: SayoDeviceSnapshot) throws {
+        let identity = try requireSelectedDevice()
+        guard identity.matches(expectedDevice) else {
+            throw SayoDeviceServiceError.deviceSelectionChanged
+        }
+        guard !needsRefreshAfterCommitFailure else {
+            throw SayoDeviceServiceError.configurationRefreshRequired
+        }
+        guard Set(frame.map(\.number)).count == frame.count else {
+            throw SayoProtocolError.invalidPacket("status frame contains duplicate light numbers")
+        }
+        try restoreStatusLighting()
+        try applyStatusFrame(frame)
+    }
+
+    private func restoreStatusLighting() throws {
+        for light in originalStatusLighting { try writeLightingV2(light) }
+        originalStatusLighting = []
+    }
+
+    private func applyStatusFrame(_ frame: [SayoStatusLight]) throws {
+        // Capture and validate the whole frame before touching either light.
+        let originals = try frame.map { try readLightingV2(number: $0.number) }
+        let updated = try zip(originals, frame).map { light, color in
+            try light.settingStaticColor(red: color.red, green: color.green, blue: color.blue)
+        }
+        originalStatusLighting = originals
+        statusFrame = frame
+        for light in updated { try writeLightingV2(light) }
+    }
+
+    private func writeButtons(_ buttons: [SayoButtonConfiguration]) throws -> [SayoButtonConfiguration] {
         _ = try requireSelectedDevice()
         guard !buttons.isEmpty, buttons.count <= 16 else {
             throw SayoProtocolError.invalidPacket("button count must be between one and sixteen")
@@ -208,10 +375,6 @@ public actor SayoDeviceService {
             verified.append(decoded)
         }
 
-        let saveResponse = try transact(SayoPacket(command: 4, payload: [0x72, 0x96]))
-        guard saveResponse.command == 0 else {
-            throw SayoProtocolError.deviceRejected(command: 4, code: saveResponse.command)
-        }
         return verified
     }
 
@@ -230,7 +393,11 @@ public actor SayoDeviceService {
         guard response.command == 0 else {
             throw SayoProtocolError.deviceRejected(command: 0x10, code: response.command)
         }
-        return try decodeLightingV2(response)
+        let decoded = try decodeLightingV2(response)
+        guard decoded.number == number else {
+            throw SayoProtocolError.invalidPacket("Lighting v2 read returned the wrong light number")
+        }
+        return decoded
     }
 
     public func readIndexedRecord(command: UInt8, number: UInt8) throws -> SayoIndexedRecord {
@@ -390,13 +557,13 @@ public actor SayoDeviceService {
             address += count
         }
         let readBack = try readRawScriptImage(maximumBytes: max(64, bytes.count + 64))
-        guard readBack.starts(with: image) else {
+        guard readBack.starts(with: bytes) else {
             throw SayoProtocolError.invalidPacket("script image did not verify after writing")
         }
         return image.count
     }
 
-    public func saveToFlash() throws {
+    private func flashConfiguration() throws {
         _ = try requireSelectedDevice()
         let response = try transact(SayoPacket(command: 4, payload: [0x72, 0x96]))
         guard response.command == 0 else {
@@ -491,89 +658,11 @@ public actor SayoDeviceService {
     }
 
     private func transact(_ packet: SayoPacket, boundTo identity: DeviceIdentity? = nil) throws -> SayoPacket {
-        let target = try requireSelectedDevice(identity)
-        let output = try packet.encoded()
-        Self.logger.debug(
-            "HID TX command=\(Int(packet.command), privacy: .public) payloadLength=\(packet.payload.count, privacy: .public)"
-        )
-        var input = [UInt8](repeating: 0, count: SayoPacket.reportLength)
-        var error = [CChar](repeating: 0, count: 256)
-        let length = target.serialNumber.withCString { serialNumber in
-            output.withUnsafeBufferPointer { outputBuffer in
-                input.withUnsafeMutableBufferPointer { inputBuffer in
-                    sayo_hid_transact(
-                        Self.vendorID,
-                        Self.productID,
-                        Self.usagePage,
-                        Self.usage,
-                        serialNumber,
-                        target.locationID,
-                        outputBuffer.baseAddress,
-                        outputBuffer.count,
-                        inputBuffer.baseAddress,
-                        inputBuffer.count,
-                        1200,
-                        &error,
-                        error.count
-                    )
-                }
-            }
-        }
-        guard length > 0 else {
-            let message = decodeCString(error)
-            Self.logger.error(
-                "HID transport failed command=\(Int(packet.command), privacy: .public): \(message, privacy: .private)"
-            )
-            throw SayoDeviceServiceError.transport(message)
-        }
-        let responseBytes = Array(input.prefix(Int(length)))
-        do {
-            let response = try SayoPacket.decode(
-                responseBytes,
-                checksumValidation: .opaqueFirmwareResponseTrailer
-            )
-            let trailerIndex = 3 + response.payload.count
-            let trailer = trailerIndex < responseBytes.count ? responseBytes[trailerIndex] : 0
-            if response.command == 0 {
-                Self.logger.debug(
-                    "HID RX requestCommand=\(Int(packet.command), privacy: .public) status=0 payloadLength=\(response.payload.count, privacy: .public) trailer=\(Int(trailer), privacy: .public)"
-                )
-            } else {
-                Self.logger.error(
-                    "HID command rejected requestCommand=\(Int(packet.command), privacy: .public) status=\(Int(response.command), privacy: .public) payloadLength=\(response.payload.count, privacy: .public) trailer=\(Int(trailer), privacy: .public)"
-                )
-            }
-            return response
-        } catch {
-            Self.logger.error("Could not decode HID response: \(error.localizedDescription, privacy: .private)")
-            throw error
-        }
+        try transport.transact(packet, boundTo: requireSelectedDevice(identity))
     }
 
     private func findDevice() throws -> DeviceIdentity {
-        var info = sayo_hid_device_info()
-        var error = [CChar](repeating: 0, count: 256)
-        let found = sayo_hid_find(
-            Self.vendorID,
-            Self.productID,
-            Self.usagePage,
-            Self.usage,
-            &info,
-            &error,
-            error.count
-        )
-        guard found == 1 else {
-            throw SayoDeviceServiceError.transport(decodeCString(error))
-        }
-
-        return DeviceIdentity(
-            product: string(from: info.product),
-            manufacturer: string(from: info.manufacturer),
-            serialNumber: string(from: info.serial_number),
-            vendorID: info.vendor_id,
-            productID: info.product_id,
-            locationID: info.location_id
-        )
+        try transport.findDevice()
     }
 
     private func requireSelectedDevice(_ identity: DeviceIdentity? = nil) throws -> DeviceIdentity {
@@ -584,19 +673,7 @@ public actor SayoDeviceService {
         return target
     }
 
-    private func string<T>(from tuple: T) -> String {
-        withUnsafeBytes(of: tuple) { rawBuffer in
-            let bytes = rawBuffer.bindMemory(to: CChar.self)
-            return String(cString: bytes.baseAddress!)
-        }
-    }
 
-    private func decodeCString(_ bytes: [CChar]) -> String {
-        String(
-            decoding: bytes.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
-            as: UTF8.self
-        )
-    }
 }
 
 private extension Optional {
@@ -604,13 +681,4 @@ private extension Optional {
         guard let self else { throw error() }
         return self
     }
-}
-
-private struct DeviceIdentity: Sendable {
-    let product: String
-    let manufacturer: String
-    let serialNumber: String
-    let vendorID: UInt16
-    let productID: UInt16
-    let locationID: UInt32
 }

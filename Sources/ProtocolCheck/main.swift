@@ -1,4 +1,8 @@
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 import Foundation
 import KeyboardCore
 
@@ -252,7 +256,7 @@ do {
 
     print("PASS: protocol, official-feature catalog, backup, Lighting v2, Codex Deck, Codex lifecycle, and Hyperdeck gesture assertions")
 } catch {
-    fputs("FAIL: \(error)\n", stderr)
+    FileHandle.standardError.write(Data("FAIL: \(error)\n".utf8))
     exit(1)
 }
 

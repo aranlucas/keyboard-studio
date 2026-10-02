@@ -27,9 +27,32 @@ private final class ScriptedHID: SayoHIDTransport, @unchecked Sendable {
         var passwords: [UInt8: [UInt8]] = [:]
         var gate: Gate?
     }
-    final class Gate: @unchecked Sendable {
-        let entered = DispatchSemaphore(value: 0)
+    final class Gate: Sendable {
+        // Only the synchronous transport is deliberately blocked. The async test
+        // driver suspends on this buffered event instead of blocking a pool thread.
+        private let entry: AsyncStream<Bool>
+        private let entryContinuation: AsyncStream<Bool>.Continuation
         let release = DispatchSemaphore(value: 0)
+
+        init(timeout: DispatchTimeInterval = .seconds(10)) {
+            let (stream, continuation) = AsyncStream.makeStream(of: Bool.self, bufferingPolicy: .bufferingNewest(1))
+            entry = stream
+            entryContinuation = continuation
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                continuation.yield(false)
+                continuation.finish()
+            }
+        }
+
+        func signalEntry() {
+            entryContinuation.yield(true)
+            entryContinuation.finish()
+        }
+
+        func waitForEntry() async -> Bool {
+            var iterator = entry.makeAsyncIterator()
+            return await iterator.next() ?? false
+        }
     }
     private let lock = NSLock()
     private var state = State()
@@ -47,7 +70,7 @@ private final class ScriptedHID: SayoHIDTransport, @unchecked Sendable {
             return gate
         }
         if let gate {
-            gate.entered.signal()
+            gate.signalEntry()
             guard gate.release.wait(timeout: .now() + 10) == .success else {
                 throw SayoDeviceServiceError.transport("Test gate timed out")
             }
@@ -132,6 +155,19 @@ struct SayoConfigurationCommitTests {
     private func selected(_ transport: ScriptedHID) async throws -> (SayoDeviceService, SayoDeviceSnapshot) {
         let service = SayoDeviceService(transport: transport)
         return (service, try await service.readSnapshot())
+    }
+
+    @Test
+    func commitGateBuffersEntryBeforeAsyncWait() async {
+        let gate = ScriptedHID.Gate()
+        gate.signalEntry()
+        #expect(await gate.waitForEntry())
+    }
+
+    @Test
+    func commitGateTimesOutWithoutBlockingAsyncWait() async {
+        let gate = ScriptedHID.Gate(timeout: .milliseconds(1))
+        #expect(await gate.waitForEntry() == false)
     }
 
     @Test(arguments: [
@@ -386,7 +422,7 @@ struct SayoConfigurationCommitTests {
             try await service.commitConfiguration(SayoConfigurationPlan(lighting: [light(0, 30), light(1, 40)]),
                                                   expectedDevice: snapshot)
         }
-        let entered = await Task.detached { gate.entered.wait(timeout: .now() + 10) == .success }.value
+        let entered = await gate.waitForEntry()
         #expect(entered)
         transport.configure {
             $0.identity = DeviceIdentity(product: "Test pad", manufacturer: "Test", serialNumber: "test-2",
@@ -409,7 +445,7 @@ struct SayoConfigurationCommitTests {
             try await service.commitConfiguration(SayoConfigurationPlan(lighting: [light(0, 30), light(1, 40)]),
                                                   expectedDevice: snapshot)
         }
-        let entered = await Task.detached { gate.entered.wait(timeout: .now() + 10) == .success }.value
+        let entered = await gate.waitForEntry()
         #expect(entered)
         let second = Task {
             try await service.commitConfiguration(SayoConfigurationPlan(lighting: [light(0, 50), light(1, 60)]),

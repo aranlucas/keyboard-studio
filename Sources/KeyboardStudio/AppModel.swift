@@ -29,6 +29,13 @@ private struct CodexLampFrame: Equatable {
     let button2: CodexLampColor
 
     static let off = CodexLampFrame(button1: .off, button2: .off)
+
+    var statusLights: [SayoStatusLight] {
+        self == .off ? [] : [
+            SayoStatusLight(number: 0, red: button1.red, green: button1.green, blue: button1.blue),
+            SayoStatusLight(number: 1, red: button2.red, green: button2.green, blue: button2.blue),
+        ]
+    }
 }
 
 enum ScriptPreset: String, CaseIterable, Identifiable {
@@ -755,7 +762,8 @@ final class AppModel: ObservableObject {
     }
 
     func previewCodexDeckLight() async {
-        guard deviceSnapshot != nil else {
+        guard !isLoadingDevice else { return }
+        guard let snapshot = deviceSnapshot else {
             deckMessage = "Connect the SayoDevice before testing its RGB alert."
             return
         }
@@ -764,12 +772,12 @@ final class AppModel: ObservableObject {
             return
         }
         do {
-            try await preserveOriginalLightingIfNeeded()
             let preview = CodexLampFrame(button1: .workingBlue, button2: .attentionRed)
-            try await applyLampFrame(preview)
+            try await deviceService.setStatusFrame(preview.statusLights, expectedDevice: snapshot)
             appliedLampFrame = preview
             deckMessage = "Status lamp preview: Button 1 is working blue; Button 2 is attention red."
         } catch {
+            appliedLampFrame = nil
             deckMessage = "RGB preview failed: \(error.localizedDescription)"
         }
     }
@@ -923,13 +931,7 @@ final class AppModel: ObservableObject {
 
         do {
             guard force || appliedLampFrame != desiredFrame, let snapshot = deviceSnapshot else { return }
-            let frame: [SayoStatusLight] = desiredFrame == .off ? [] : [
-                SayoStatusLight(number: 0, red: desiredFrame.button1.red,
-                                green: desiredFrame.button1.green, blue: desiredFrame.button1.blue),
-                SayoStatusLight(number: 1, red: desiredFrame.button2.red,
-                                green: desiredFrame.button2.green, blue: desiredFrame.button2.blue),
-            ]
-            try await deviceService.setStatusFrame(frame, expectedDevice: snapshot)
+            try await deviceService.setStatusFrame(desiredFrame.statusLights, expectedDevice: snapshot)
             appliedLampFrame = desiredFrame
         } catch {
             appliedLampFrame = nil

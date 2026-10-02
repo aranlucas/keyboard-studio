@@ -70,6 +70,15 @@ The script writes `dist/Keyboard Studio.app`, builds the host architecture, and 
 
 ## Validation
 
+The configuration actor accepts a complete edit plan and the expected keyboard identity. It validates the whole plan before writes, restores temporary status lighting before flash, and reapplies the lamp only after flash succeeds. A failed write reports possible partial volatile changes and requires Refresh before another save; firmware rollback is not assumed. A lamp failure after flash is reported separately from save success.
+
+Offline core tests and `protocol-check` also run on Linux with Swift 6. The Linux package excludes the SwiftUI app and live HID tools and uses a non-hardware default transport. Configuration regression tests inject a scripted transport on both platforms:
+
+```bash
+swift test -j 2
+swift run -c release protocol-check
+```
+
 The repository CI runs formatting/package checks, `swift test`, a release build, `protocol-check`, and a Clang static analysis pass over the HID bridge. A physical keyboard is required to exercise live HID discovery and flash writes.
 
 ## License

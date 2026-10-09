@@ -1,39 +1,43 @@
-name: Swift tests
+name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  test:
-    # macos-14 defaults to Xcode 15/Swift 5.10; the package requires Swift 6.
+  ci:
     runs-on: macos-15
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Check for accidental secrets
-        run: |
-          secret_pattern='BEGIN (RSA|OPENSSH|EC|PGP) PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|(cfp_|cf_)[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9_-]{20,}|(CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{20,}|NPM_TOKEN[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{20,}'
-          if matches=$(git grep -l -I -E "$secret_pattern"); then
-            echo "Potential credential material is tracked in:"
-            echo "$matches"
-            exit 1
-          fi
-      - name: Check formatting and package graph
-        run: |
-          git diff --check
-          swift package show-dependencies
-      - name: Run Swift tests
-        run: swift test
-      - name: Build release products
-        run: swift build -c release
-      - name: Run protocol assertions
-        run: swift run -c release protocol-check
-      - name: Analyze the C HID bridge
-        run: clang --analyze -Xanalyzer -analyzer-output=text -I Sources/CHIDBridge/include Sources/CHIDBridge/CHIDBridge.c
+
+      - parallel:
+          - name: Check for accidental secrets
+            run: |
+              secret_pattern='BEGIN (RSA|OPENSSH|EC|PGP) PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|(cfp_|cf_)[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9_-]{20,}|(CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_API_TOKEN)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{20,}|NPM_TOKEN[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{20,}'
+              if matches=$(git grep -l -I -E "$secret_pattern"); then
+                echo "Potential credential material is tracked in:"
+                echo "$matches"
+                exit 1
+              fi
+
+          - name: "Lint: whitespace and package graph"
+            run: git diff --check && swift package show-dependencies
+
+          - name: Analyze the C HID bridge
+            run: clang --analyze -Xanalyzer -analyzer-output=text -I Sources/CHIDBridge/include Sources/CHIDBridge/CHIDBridge.c
+
+          - name: Test, build release, and run protocol assertions
+            run: swift test && swift build -c release && swift run -c release protocol-check

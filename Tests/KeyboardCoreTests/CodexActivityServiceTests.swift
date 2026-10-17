@@ -1,5 +1,10 @@
 import Foundation
 import Testing
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 @testable import KeyboardCore
 
 struct CodexActivityServiceTests {
@@ -28,6 +33,94 @@ struct CodexActivityServiceTests {
         try FileManager.default.setAttributes(
             [.modificationDate: Date(timeIntervalSince1970: 1999)], ofItemAtPath: rollout.path
         )
+        let after = await service.runtimeStatus(now: now)
+        #expect(after.activeTaskCount == 0)
+        #expect(after.lastCompletedAt == 1001)
+    }
+
+    @Test
+    func sameSizeAtomicRolloutReplacementInvalidatesLifecycleCache() async throws {
+        try await expectAtomicReplacementInvalidatesLifecycleCache(replacementSize: 256)
+    }
+
+    @Test
+    func largerAtomicRolloutReplacementInvalidatesLifecycleCache() async throws {
+        try await expectAtomicReplacementInvalidatesLifecycleCache(replacementSize: 512)
+    }
+
+    private func expectAtomicReplacementInvalidatesLifecycleCache(replacementSize: Int) async throws {
+        let fileManager = FileManager.default
+        let home = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sessions = home.appendingPathComponent(".codex/sessions")
+        try fileManager.createDirectory(at: sessions, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: home) }
+
+        let rollout = sessions.appendingPathComponent("synthetic.jsonl")
+        let replacement = sessions.appendingPathComponent("replacement.tmp")
+        let started = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"started_at\":1000}}\n"
+        let completed = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"completed_at\":1001}}\n"
+        let modifiedAt = Date(timeIntervalSince1970: 1998)
+        let now = Date(timeIntervalSince1970: 2000)
+        let service = CodexActivityService(homeDirectory: home)
+
+        try Data(started.padding(toLength: 256, withPad: " ", startingAt: 0).utf8).write(to: rollout)
+        try fileManager.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: rollout.path)
+        let originalAttributes = try fileManager.attributesOfItem(atPath: rollout.path)
+        let before = await service.runtimeStatus(now: now)
+        #expect(before.activeTaskCount == 1)
+        #expect(before.lastCompletedAt == nil)
+
+        // The completion precedes the old 256-byte append offset in both cases.
+        #expect(completed.utf8.count < 256)
+        try Data(completed.padding(toLength: replacementSize, withPad: " ", startingAt: 0).utf8)
+            .write(to: replacement)
+        try fileManager.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: replacement.path)
+        try #require(rename(replacement.path, rollout.path) == 0)
+        let replacementAttributes = try fileManager.attributesOfItem(atPath: rollout.path)
+        #expect(originalAttributes[.systemFileNumber] as? NSNumber != replacementAttributes[.systemFileNumber] as? NSNumber)
+        #expect(originalAttributes[.modificationDate] as? Date == replacementAttributes[.modificationDate] as? Date)
+        #expect(replacementAttributes[.size] as? NSNumber == NSNumber(value: replacementSize))
+
+        let after = await service.runtimeStatus(now: now)
+        let fresh = await CodexActivityService(homeDirectory: home).runtimeStatus(now: now)
+        #expect(fresh.activeTaskCount == 0)
+        #expect(fresh.lastCompletedAt == 1001)
+        #expect(after.activeTaskCount == 0)
+        #expect(after.lastCompletedAt == 1001)
+        #expect(after == fresh)
+        let repeated = await service.runtimeStatus(now: now)
+        #expect(repeated == fresh)
+    }
+
+    @Test
+    func appendedRolloutCompletionUpdatesLifecycleCache() async throws {
+        let fileManager = FileManager.default
+        let home = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sessions = home.appendingPathComponent(".codex/sessions")
+        try fileManager.createDirectory(at: sessions, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: home) }
+
+        let rollout = sessions.appendingPathComponent("synthetic.jsonl")
+        let started = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"started_at\":1000}}\n"
+        let completed = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"completed_at\":1001}}\n"
+        let modifiedAt = Date(timeIntervalSince1970: 1998)
+        let now = Date(timeIntervalSince1970: 2000)
+        try Data(started.utf8).write(to: rollout)
+        try fileManager.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: rollout.path)
+        let originalAttributes = try fileManager.attributesOfItem(atPath: rollout.path)
+        let service = CodexActivityService(homeDirectory: home)
+        let before = await service.runtimeStatus(now: now)
+        #expect(before.activeTaskCount == 1)
+        #expect(before.lastCompletedAt == nil)
+
+        let handle = try FileHandle(forWritingTo: rollout)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(completed.utf8))
+        // Size growth on the same inode must still be read even with the old mtime.
+        try fileManager.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: rollout.path)
+        let appendedAttributes = try fileManager.attributesOfItem(atPath: rollout.path)
+        #expect(originalAttributes[.systemFileNumber] as? NSNumber == appendedAttributes[.systemFileNumber] as? NSNumber)
         let after = await service.runtimeStatus(now: now)
         #expect(after.activeTaskCount == 0)
         #expect(after.lastCompletedAt == 1001)

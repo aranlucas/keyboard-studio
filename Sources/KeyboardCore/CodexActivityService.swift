@@ -189,7 +189,8 @@ public actor CodexActivityService {
         let endOffset = (try? handle.seekToEnd()) ?? 0
         let cacheKey = fileURL.path
 
-        if let cached = lifecycleCache[cacheKey], cached.fileSize == endOffset {
+        if let cached = lifecycleCache[cacheKey], cached.fileSize == endOffset,
+           cached.modifiedAt == modifiedAt {
             return cached.event
         }
 

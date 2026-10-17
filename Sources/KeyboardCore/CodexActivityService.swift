@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 public struct CodexActivity: Codable, Equatable, Identifiable, Sendable {
     public var id: String { threadID }
@@ -120,14 +125,16 @@ public actor CodexActivityService {
         var lastCompletedAt: Int64?
         var lastInterruptedAt: Int64?
 
+        // Keep the path-based recent-file filter to avoid opening old rollouts.
+        // Cache decisions and the final cutoff check use opened-handle metadata.
         for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
             guard let values = try? fileURL.resourceValues(
                 forKeys: [.contentModificationDateKey, .isRegularFileKey]
             ),
                 values.isRegularFile == true,
-                let modifiedAt = values.contentModificationDate,
-                modifiedAt >= cutoff,
-                let event = lastLifecycleEvent(in: fileURL, modifiedAt: modifiedAt)
+                let candidateModifiedAt = values.contentModificationDate,
+                candidateModifiedAt >= cutoff,
+                let event = lastLifecycleEvent(in: fileURL, cutoff: cutoff)
             else {
                 continue
             }
@@ -182,23 +189,44 @@ public actor CodexActivityService {
         return nil
     }
 
-    private func lastLifecycleEvent(in fileURL: URL, modifiedAt: Date) -> CodexLifecycleEvent? {
+    private func lastLifecycleEvent(in fileURL: URL, cutoff: Date) -> CodexLifecycleEvent? {
         guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
         defer { try? handle.close() }
 
-        let endOffset = (try? handle.seekToEnd()) ?? 0
+        // Snapshot metadata from the same opened file that will be read below.
+        // Path metadata may describe a replacement rather than this handle.
+        var attributes = stat()
+        guard fstat(handle.fileDescriptor, &attributes) == 0,
+              attributes.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              attributes.st_size >= 0
+        else { return nil }
+        let identity = LifecycleFileIdentity(device: attributes.st_dev, inode: attributes.st_ino)
+        #if canImport(Darwin)
+        let modificationTime = attributes.st_mtimespec
+        #else
+        let modificationTime = attributes.st_mtim
+        #endif
+        let modifiedAt = Date(timeIntervalSince1970:
+            TimeInterval(modificationTime.tv_sec) + TimeInterval(modificationTime.tv_nsec) / 1_000_000_000
+        )
+        guard modifiedAt >= cutoff else { return nil }
+        let endOffset = UInt64(attributes.st_size)
         let cacheKey = fileURL.path
 
-        if let cached = lifecycleCache[cacheKey], cached.fileSize == endOffset {
+        if let cached = lifecycleCache[cacheKey], cached.identity == identity,
+           cached.fileSize == endOffset,
+           cached.modifiedAt == modifiedAt {
             return cached.event
         }
 
-        if let cached = lifecycleCache[cacheKey], endOffset > cached.fileSize {
+        if let cached = lifecycleCache[cacheKey], cached.identity == identity,
+           endOffset > cached.fileSize {
             do {
                 try handle.seek(toOffset: cached.fileSize)
                 let appendedData = try handle.readToEnd() ?? Data()
                 let event = Self.decodeLastLifecycleEvent(from: appendedData) ?? cached.event
                 lifecycleCache[cacheKey] = LifecycleCacheEntry(
+                    identity: identity,
                     modifiedAt: modifiedAt,
                     fileSize: endOffset,
                     event: event
@@ -211,6 +239,7 @@ public actor CodexActivityService {
 
         let event = Self.scanBackwardForLifecycleEvent(handle: handle, endOffset: endOffset)
         lifecycleCache[cacheKey] = LifecycleCacheEntry(
+            identity: identity,
             modifiedAt: modifiedAt,
             fileSize: endOffset,
             event: event
@@ -269,7 +298,13 @@ public actor CodexActivityService {
     }
 }
 
+private struct LifecycleFileIdentity: Equatable, Sendable {
+    let device: dev_t
+    let inode: ino_t
+}
+
 private struct LifecycleCacheEntry: Sendable {
+    let identity: LifecycleFileIdentity
     let modifiedAt: Date
     let fileSize: UInt64
     let event: CodexLifecycleEvent?

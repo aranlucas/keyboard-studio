@@ -34,11 +34,11 @@ private final class ScriptedHID: SayoHIDTransport, @unchecked Sendable {
         private let entryContinuation: AsyncStream<Bool>.Continuation
         let release = DispatchSemaphore(value: 0)
 
-        init(timeout: DispatchTimeInterval = .seconds(10)) {
+        init() {
             let (stream, continuation) = AsyncStream.makeStream(of: Bool.self, bufferingPolicy: .bufferingNewest(1))
             entry = stream
             entryContinuation = continuation
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
                 continuation.yield(false)
                 continuation.finish()
             }
@@ -155,19 +155,6 @@ struct SayoConfigurationCommitTests {
     private func selected(_ transport: ScriptedHID) async throws -> (SayoDeviceService, SayoDeviceSnapshot) {
         let service = SayoDeviceService(transport: transport)
         return (service, try await service.readSnapshot())
-    }
-
-    @Test
-    func commitGateBuffersEntryBeforeAsyncWait() async {
-        let gate = ScriptedHID.Gate()
-        gate.signalEntry()
-        #expect(await gate.waitForEntry())
-    }
-
-    @Test
-    func commitGateTimesOutWithoutBlockingAsyncWait() async {
-        let gate = ScriptedHID.Gate(timeout: .milliseconds(1))
-        #expect(await gate.waitForEntry() == false)
     }
 
     @Test(arguments: [

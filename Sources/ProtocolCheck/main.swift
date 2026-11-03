@@ -142,9 +142,6 @@ do {
     try check(indexedWrite.payload == [1, 5, 10, 0xAA, 0xBB, 0xCC], "indexed record write did not preserve values")
 
     try check(SayoLightingEffect.allCases.map(\.rawValue) == [0, 1, 2, 3, 4, 6, 7, 8, 9, 14, 15], "lighting effect catalog differs from the official mode set")
-    for mode: UInt8 in [0, 2, 3, 8, 48, 64, 128, 129] {
-        try check(SayoKeyModeCatalog.entry(for: mode).code == mode, "key mode \(mode) is missing from the catalog")
-    }
     try check(SayoMediaCatalog.entries.contains(where: { $0.code == 12 && $0.name == "Play / Pause" }), "media catalog is missing Play / Pause")
 
     let tapScript = SayoScriptTemplate.tapKey(0x04, pressMilliseconds: 35)

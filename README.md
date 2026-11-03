@@ -1,7 +1,5 @@
 # Keyboard Studio
 
-## Turn a tiny macro pad into a command center.
-
 [![CI](https://img.shields.io/github/actions/workflow/status/aranlucas/keyboard-studio/ci.yml?branch=main&label=CI)](https://github.com/aranlucas/keyboard-studio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -12,8 +10,6 @@ Keyboard Studio is a native macOS SwiftUI configurator and Codex status deck for
 The app is intentionally hardware-specific. The current HID bridge matches the SayoDevice O2L V2 vendor interface; it is not a general-purpose keyboard remapper.
 
 ## What it provides
-
-It is the kind of tool you open before a focused coding session: one layer for navigation, another for text or password macros, and a status surface that tells you when Codex needs attention without stealing the keyboard focus.
 
 - Read and edit button layers, key modes, modifiers, media actions, text/password macros, and lighting.
 - Back up and restore device configuration, with protocol checks before a flash commit.
@@ -41,12 +37,16 @@ swift test
 swift run KeyboardStudio
 ```
 
-The read-only tools are separate products:
+These invocations inspect the device or check the model without writing configuration:
 
 ```bash
 swift run sayo-probe
 swift run protocol-check
 ```
+
+`sayo-probe --install-codex-deck` writes and commits button mappings; its
+`--set-static-lighting-v2` and `--set-lighting-v2-raw` options change volatile
+lighting. These are explicit hardware actions, not offline checks.
 
 To make a local, ad-hoc-signed `.app` bundle on a supported Mac:
 
@@ -56,21 +56,34 @@ scripts/package_app.sh
 
 The script writes `dist/Keyboard Studio.app`, builds the host architecture, and signs it ad hoc. It is a local development package, not a notarized public distribution.
 
-## Source map
+## Save, backup and recovery
 
-| Path | Responsibility |
-| --- | --- |
-| `Sources/CHIDBridge/` | Small C bridge around IOKit HID discovery, access, reports, and callbacks. |
-| `Sources/KeyboardCore/` | Sayo protocol models, device service, Codex activity, and shared configuration logic. |
-| `Sources/KeyboardStudio/` | SwiftUI app, menu-bar deck, settings, device editor, lighting, backup, Hyperdeck, and Codex views. |
-| `Sources/SayoProbe/` | Device and Codex Deck probe executable. |
-| `Sources/ProtocolCheck/` | Offline protocol and configuration assertions. |
-| `Tests/KeyboardCoreTests/` | Unit tests for the shared device and protocol layer. |
-| `work/keyboard-two/` | Preserved reverse-engineering notes and evidence for the hardware protocol. |
+Edits stay staged until you use the relevant page's Save button. Before flash,
+the configuration actor validates the complete plan and expected device identity,
+verifies writes, and restores temporary status lighting. It reapplies the status
+lamp after flash succeeds; lamp failure is reported separately from save success.
 
-## Validation
+- Export a starting configuration from **Backup & Restore** before editing.
+  Export captures the currently staged values, so do this before making changes
+  if you need the original configuration. Password slots are excluded unless
+  loaded and explicitly included; keep backups containing secrets private.
+- Import requires a connected keyboard and validates its identity and
+  capabilities. Import only stages values; review each page before saving.
+- After an incomplete save, volatile settings may have changed. Refresh and
+  review the device before retrying; there is no promised firmware rollback.
+  If the flash acknowledgement failed, persistence is uncertain too.
+- To grant device access, click **Open Input Monitoring**, enable Keyboard Studio
+  in System Settings, then quit and reopen the app. Closing the window leaves
+  the menu-bar process running; use Quit or the packaged app's Restart control.
+  See [permission identity recovery](work/keyboard-two/report/reverse-engineering.md#permission-identity-and-recovery)
+  for a stale grant after rebuilding.
 
-The configuration actor accepts a complete edit plan and the expected keyboard identity. It validates the whole plan before writes, restores temporary status lighting before flash, and reapplies the lamp only after flash succeeds. A failed write reports possible partial volatile changes and requires Refresh before another save; firmware rollback is not assumed. A lamp failure after flash is reported separately from save success.
+Firmware update, bootloader/recovery, device lock and factory reset are guarded
+maintenance capabilities, not implemented raw commands. They require verified
+model-specific semantics or firmware, a recoverable backup and explicit user
+confirmation before they can be enabled.
+
+## Validation and protocol reference
 
 Offline core tests and `protocol-check` also run on Linux with Swift 6. The Linux package excludes the SwiftUI app and live HID tools and uses a non-hardware default transport. Configuration regression tests inject a scripted transport on both platforms:
 
@@ -79,7 +92,12 @@ swift test -j 2
 swift run -c release protocol-check
 ```
 
-The repository CI runs formatting/package checks, `swift test`, a release build, `protocol-check`, and a Clang static analysis pass over the HID bridge. A physical keyboard is required to exercise live HID discovery and flash writes.
+The repository CI runs whitespace/package-graph checks, `swift test`, a release build, `protocol-check`, and a Clang static analysis pass over the HID bridge. A physical keyboard is required to exercise live HID discovery and flash writes.
+
+The [hardware protocol notes](work/keyboard-two/report/reverse-engineering.md)
+retain observed firmware quirks and the reasons for preserving opaque bytes.
+See the [proposed roadmap](ROADMAP.md) for ordered product priorities and release
+acceptance criteria.
 
 ## License
 

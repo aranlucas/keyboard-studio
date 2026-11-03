@@ -3,14 +3,6 @@
 Updated 2026-10-26. Proposed work after Digits/MCP priorities. The supported
 hardware remains the SayoDevice O2L V2; broader device support is not assumed.
 
-## Starting point
-
-Baseline `e0efbd947a0aacfa7101ced4adcb1d5f87ab470d`: the [app](README.md)
-already edits layers/macros/lighting, backs up configuration, supports Hyperdeck
-gestures and displays Codex attention through the pad and menu bar. Saves
-validate an edit plan and device identity; a partial volatile write requires
-Refresh, not an assumed firmware rollback.
-
 ## Ordered releases
 
 1. **Set up a useful pad in one session.** Guide a new owner through device

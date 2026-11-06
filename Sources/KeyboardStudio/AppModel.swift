@@ -163,7 +163,6 @@ final class AppModel: ObservableObject {
 
     private static let acknowledgedTimestampKey = "codexDeckAcknowledgedAt"
     private static let runtimeAcknowledgedTimestampKey = "codexDeckRuntimeAcknowledgedAt"
-    private static let statusLampEnabledKey = "codexStatusLampEnabled"
     private static let maximumBackupBytes = 1_048_576
     private static let deckLogger = Logger(
         subsystem: "com.lucas.keyboardstudio",
@@ -173,8 +172,8 @@ final class AppModel: ObservableObject {
     init() {
         hyperdeck = HyperdeckController()
         editableButtons = Self.fallbackButtons
-        if UserDefaults.standard.object(forKey: Self.statusLampEnabledKey) == nil {
-            UserDefaults.standard.set(true, forKey: Self.statusLampEnabledKey)
+        if UserDefaults.standard.object(forKey: StudioPreferences.statusLampEnabledKey) == nil {
+            UserDefaults.standard.set(StudioPreferences.defaultStatusLampEnabled, forKey: StudioPreferences.statusLampEnabledKey)
         }
         configureHyperdeck()
         HyperdeckIntentBridge.install(controller: hyperdeck)
@@ -195,8 +194,8 @@ final class AppModel: ObservableObject {
 
         activityPollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                let storedInterval = UserDefaults.standard.object(forKey: "activityRefreshInterval") as? Double
-                let interval = max(5, storedInterval ?? 15)
+                let storedInterval = UserDefaults.standard.object(forKey: StudioPreferences.activityRefreshIntervalKey) as? Double
+                let interval = max(StudioPreferences.minimumActivityRefreshInterval, storedInterval ?? StudioPreferences.defaultActivityRefreshInterval)
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled, let self else { return }
                 await self.refreshActivities(notifyNew: true, showsLoading: false)
@@ -418,33 +417,12 @@ final class AppModel: ObservableObject {
 
     func textValue(for recordIndex: Int) -> String {
         guard stringSlots.indices.contains(recordIndex) else { return "" }
-        let values = stringSlots[recordIndex].values
-        var bytes: [UInt8] = []
-        var index = 0
-        while index + 1 < min(56, values.count) {
-            if values[index] == 0, values[index + 1] != 0 {
-                bytes.append(values[index + 1])
-            } else if values[index] != 0 || values[index + 1] != 0 {
-                bytes.append(values[index])
-                bytes.append(values[index + 1])
-            } else {
-                break
-            }
-            index += 2
-        }
-        return String(decoding: bytes, as: UTF8.self)
+        return stringSlots[recordIndex].textValue
     }
 
     func setTextValue(_ text: String, for recordIndex: Int) {
         guard stringSlots.indices.contains(recordIndex) else { return }
-        let bytes = Array(text.utf8.prefix(28))
-        var encoded: [UInt8] = []
-        for byte in bytes { encoded += [0, byte] }
-        encoded += [UInt8](repeating: 0, count: max(0, 56 - encoded.count))
-        var record = stringSlots[recordIndex]
-        let tail = record.values.count > 56 ? Array(record.values.dropFirst(56)) : []
-        record.values = Array(encoded.prefix(56)) + tail
-        stringSlots[recordIndex] = record
+        stringSlots[recordIndex].textValue = text
     }
 
     func saveStrings() async {
@@ -756,7 +734,7 @@ final class AppModel: ObservableObject {
         } else {
             selectedCodexReviewActivityID = candidates[0].id
         }
-        UserDefaults.standard.set(StudioSection.activity.rawValue, forKey: "selectedStudioSection")
+        UserDefaults.standard.set(StudioSection.activity.rawValue, forKey: StudioPreferences.selectedSectionKey)
         showKeyboardStudio()
         deckMessage = "Selected the next Codex activity for review."
     }
@@ -826,8 +804,8 @@ final class AppModel: ObservableObject {
     }
 
     func applyCodexTriggerProfile() {
-        setKeyboardAction(buttonIndex: 0, modifier: 0, primaryKey: 0x68)
-        setKeyboardAction(buttonIndex: 1, modifier: 0, primaryKey: 0x6B)
+        setKeyboardAction(buttonIndex: 0, modifier: 0, primaryKey: CodexDeckProfile.openCodexHIDKey)
+        setKeyboardAction(buttonIndex: 1, modifier: 0, primaryKey: CodexDeckProfile.acknowledgeHIDKey)
         deviceMessage = "F13/F16 triggers staged on Layer \(selectedLayer + 1). Save, then bind them in macOS Shortcuts."
     }
 
@@ -843,13 +821,14 @@ final class AppModel: ObservableObject {
         var loadedConfiguration = extendedDeviceConfiguration
         do {
             if snapshot.supportedCommands.contains(0x10) {
-                loadedConfiguration.lighting = try await [
-                    deviceService.readLightingV2(number: 0),
-                    deviceService.readLightingV2(number: 1),
-                ]
+                var lights: [SayoLightingV2Configuration] = []
+                for number in 0 ..< SayoO2LRecordBounds.lighting {
+                    lights.append(try await deviceService.readLightingV2(number: UInt8(number)))
+                }
+                loadedConfiguration.lighting = lights
             }
             if snapshot.supportedCommands.contains(0x11) {
-                loadedConfiguration.colorTables = try await deviceService.readIndexedRecords(command: 0x11, limit: 6)
+                loadedConfiguration.colorTables = try await deviceService.readIndexedRecords(command: 0x11, limit: SayoO2LRecordBounds.colorTables)
             }
             if snapshot.supportedCommands.contains(0x08) {
                 loadedConfiguration.deviceName = try await deviceService.readDeviceName()
@@ -858,13 +837,13 @@ final class AppModel: ObservableObject {
                 loadedConfiguration.identity = try await deviceService.readDeviceIdentityConfiguration()
             }
             if snapshot.supportedCommands.contains(0xF1) {
-                loadedConfiguration.scriptSlots = try await deviceService.readNamedSlots(command: 0xF1, limit: 2)
+                loadedConfiguration.scriptSlots = try await deviceService.readNamedSlots(command: 0xF1, limit: SayoO2LRecordBounds.scriptNames)
             }
             if snapshot.supportedCommands.contains(0xF0) {
                 loadedConfiguration.scriptImage = try await deviceService.readRawScriptImage()
             }
             if snapshot.supportedCommands.contains(0x0C) {
-                loadedConfiguration.stringSlots = try await deviceService.readIndexedRecords(command: 0x0C, limit: 16)
+                loadedConfiguration.stringSlots = try await deviceService.readIndexedRecords(command: 0x0C, limit: SayoO2LRecordBounds.strings)
             }
             loadedConfiguration.message = "Loaded keys, lighting, palettes, scripts, strings, and device settings from the keyboard."
         } catch {
@@ -921,7 +900,7 @@ final class AppModel: ObservableObject {
     private func synchronizeCodexStatusLamp(force: Bool = false) async {
         guard !isLoadingDevice, deviceSnapshot != nil, supportsRGBLighting else { return }
 
-        let enabled = UserDefaults.standard.bool(forKey: Self.statusLampEnabledKey)
+        let enabled = UserDefaults.standard.bool(forKey: StudioPreferences.statusLampEnabledKey)
         let desiredFrame = hyperdeckLampOverride ?? (enabled
             ? CodexLampFrame(
                 button1: activeCodexTaskCount > 0 ? .workingBlue : .off,

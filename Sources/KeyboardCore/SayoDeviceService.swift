@@ -6,7 +6,6 @@ public enum SayoDeviceServiceError: Error, LocalizedError, Sendable {
     case deviceSelectionRequired
     case deviceSelectionChanged
     case configurationRefreshRequired
-    case malformedCString
 
     public var errorDescription: String? {
         switch self {
@@ -17,7 +16,6 @@ public enum SayoDeviceServiceError: Error, LocalizedError, Sendable {
             "Refresh the keyboard before reading or writing device settings."
         case .deviceSelectionChanged: "The selected keyboard changed. Refresh and review the edits before saving."
         case .configurationRefreshRequired: "Refresh and review the keyboard after the incomplete configuration write."
-        case .malformedCString: "The HID device returned malformed identity text."
         }
     }
 }
@@ -26,77 +24,6 @@ public enum SayoKeyboardAccessStatus: Int, Equatable, Sendable {
     case granted = 0
     case denied = 1
     case unknown = 2
-}
-
-public struct SayoLightingV2Configuration: Codable, Equatable, Sendable {
-    public var number: UInt8
-    public var mode: UInt8
-    public var values: [UInt8]
-
-    public init(number: UInt8, mode: UInt8, values: [UInt8]) {
-        self.number = number
-        self.mode = mode
-        self.values = values
-    }
-
-    public func settingStaticColor(red: UInt8, green: UInt8, blue: UInt8) throws -> Self {
-        guard values.count >= 9 else {
-            throw SayoProtocolError.invalidPacket("Lighting v2 record has fewer than nine value bytes")
-        }
-        var updatedValues = values
-        updatedValues.replaceSubrange(0 ..< 9, with: [0, 0, 0, red, green, blue, 0, 0, 0])
-        return Self(number: number, mode: 0, values: updatedValues)
-    }
-
-    public var effect: SayoLightingEffect? {
-        get { SayoLightingEffect(rawValue: mode) }
-        set { if let newValue { mode = newValue.rawValue } }
-    }
-
-    public var colorSource: UInt8 {
-        get { values.indices.contains(0) ? values[0] : 0 }
-        set { if values.indices.contains(0) { values[0] = newValue } }
-    }
-
-    public var speed: UInt8 {
-        get { values.indices.contains(1) ? values[1] : 0 }
-        set { if values.indices.contains(1) { values[1] = newValue } }
-    }
-
-    public var event: UInt8 {
-        get { values.indices.contains(2) ? values[2] : 0 }
-        set { if values.indices.contains(2) { values[2] = newValue } }
-    }
-
-    public var red: UInt8 {
-        get { values.indices.contains(3) ? values[3] : 0 }
-        set { if values.indices.contains(3) { values[3] = newValue } }
-    }
-
-    public var green: UInt8 {
-        get { values.indices.contains(4) ? values[4] : 0 }
-        set { if values.indices.contains(4) { values[4] = newValue } }
-    }
-
-    public var blue: UInt8 {
-        get { values.indices.contains(5) ? values[5] : 0 }
-        set { if values.indices.contains(5) { values[5] = newValue } }
-    }
-
-    public var onTime: UInt8 {
-        get { values.indices.contains(6) ? values[6] : 0 }
-        set { if values.indices.contains(6) { values[6] = newValue } }
-    }
-
-    public var offTime: UInt8 {
-        get { values.indices.contains(7) ? values[7] : 0 }
-        set { if values.indices.contains(7) { values[7] = newValue } }
-    }
-
-    public var colorTable: UInt8 {
-        get { values.indices.contains(8) ? values[8] : 0 }
-        set { if values.indices.contains(8) { values[8] = newValue } }
-    }
 }
 
 public actor SayoDeviceService {
@@ -125,7 +52,7 @@ public actor SayoDeviceService {
     }
 
     public func isPresent() -> Bool {
-        (try? findDevice()) != nil
+        (try? transport.findDevice()) != nil
     }
 
     /// Drops the device selected by the last successful snapshot refresh.
@@ -145,7 +72,7 @@ public actor SayoDeviceService {
             throw SayoDeviceServiceError.keyboardAccessRequired
         }
         let identity: DeviceIdentity
-        do { identity = try findDevice() } catch {
+        do { identity = try transport.findDevice() } catch {
             clearSelection()
             throw error
         }
@@ -234,7 +161,7 @@ public actor SayoDeviceService {
             phase = .writing
             verified.buttons = []
             for button in plan.buttons {
-                verified.buttons += try writeButtons([button])
+                verified.buttons.append(try writeButton(button))
                 verifiedCount += 1
             }
             verified.lighting = []
@@ -251,8 +178,7 @@ public actor SayoDeviceService {
             for slot in plan.scriptSlots {
                 let echoed = try writeNamedSlot(command: 0xF1, slot: slot)
                 guard echoed.number == slot.number,
-                      Array(echoed.rawName.prefix(32)) == Array(slot.name.utf8.prefix(32))
-                        + [UInt8](repeating: 0, count: max(0, 32 - slot.name.utf8.count))
+                      Array(echoed.rawName.prefix(32)) == SayoSlotFormat.script.encode(slot.name)
                 else { throw SayoProtocolError.invalidPacket("script name did not verify after writing") }
                 verified.scriptSlots.append(echoed)
                 verifiedCount += 1
@@ -264,7 +190,7 @@ public actor SayoDeviceService {
             verified.passwords = []
             for slot in plan.passwords {
                 let echoed = try writePasswordSlot(slot)
-                let intended = String(decoding: slot.name.utf8.prefix(57).prefix { $0 != 0 }, as: UTF8.self)
+                let intended = SayoSlotFormat.password.decodedName(slot.name)
                 guard echoed.number == slot.number, echoed.name == intended else {
                     throw SayoProtocolError.invalidPacket("password slot did not verify after writing")
                 }
@@ -338,7 +264,6 @@ public actor SayoDeviceService {
     }
 
     private func applyStatusFrame(_ frame: [SayoStatusLight]) throws {
-        // Capture and validate the whole frame before touching either light.
         let originals = try frame.map { try readLightingV2(number: $0.number) }
         let updated = try zip(originals, frame).map { light, color in
             try light.settingStaticColor(red: color.red, green: color.green, blue: color.blue)
@@ -348,44 +273,26 @@ public actor SayoDeviceService {
         for light in updated { try writeLightingV2(light) }
     }
 
-    private func writeButtons(_ buttons: [SayoButtonConfiguration]) throws -> [SayoButtonConfiguration] {
+    private func writeButton(_ button: SayoButtonConfiguration) throws -> SayoButtonConfiguration {
         _ = try requireSelectedDevice()
-        guard !buttons.isEmpty, buttons.count <= 16 else {
-            throw SayoProtocolError.invalidPacket("button count must be between one and sixteen")
+        let request = try button.writePacket()
+        let response = try transact(request)
+        let decoded = button.usesModernKeyMap
+            ? try SayoButtonConfiguration.decodeModern(response: response)
+            : try SayoButtonConfiguration.decodeLegacy(response: response)
+        guard decoded.number == button.number else {
+            throw SayoProtocolError.invalidPacket("write verification returned the wrong button number")
         }
-        var verified: [SayoButtonConfiguration] = []
-        for button in buttons {
-            let request = try button.writePacket()
-            let response = try transact(request)
-            let decoded = button.usesModernKeyMap
-                ? try SayoButtonConfiguration.decodeModern(response: response)
-                : try SayoButtonConfiguration.decodeLegacy(response: response)
-            guard decoded.number == button.number else {
-                throw SayoProtocolError.invalidPacket("write verification returned the wrong button number")
-            }
-            let intendedLayers = Array(button.layers.prefix(button.usesModernKeyMap ? 5 : 1))
-            guard decoded.layers == intendedLayers else {
-                throw SayoProtocolError.invalidPacket("write verification returned different layer data")
-            }
-            if button.usesModernKeyMap {
-                guard decoded.header.dropFirst(2) == button.header.dropFirst(2) else {
-                    throw SayoProtocolError.invalidPacket("write verification changed opaque button metadata")
-                }
-            }
-            verified.append(decoded)
+        let intendedLayers = Array(button.layers.prefix(button.usesModernKeyMap ? 5 : 1))
+        guard decoded.layers == intendedLayers else {
+            throw SayoProtocolError.invalidPacket("write verification returned different layer data")
         }
-
-        return verified
-    }
-
-    public func setStaticLighting(number: Int, red: UInt8, green: UInt8, blue: UInt8) throws {
-        _ = try requireSelectedDevice()
-        guard let lightingNumber = UInt8(exactly: number) else {
-            throw SayoProtocolError.invalidPacket("Lighting v2 number is outside the UInt8 range")
+        if button.usesModernKeyMap {
+            guard decoded.header.dropFirst(2) == button.header.dropFirst(2) else {
+                throw SayoProtocolError.invalidPacket("write verification changed opaque button metadata")
+            }
         }
-        let current = try readLightingV2(number: lightingNumber)
-        let updated = try current.settingStaticColor(red: red, green: green, blue: blue)
-        try writeLightingV2(updated)
+        return decoded
     }
 
     public func readLightingV2(number: UInt8) throws -> SayoLightingV2Configuration {
@@ -393,7 +300,7 @@ public actor SayoDeviceService {
         guard response.command == 0 else {
             throw SayoProtocolError.deviceRejected(command: 0x10, code: response.command)
         }
-        let decoded = try decodeLightingV2(response)
+        let decoded = try SayoLightingV2Configuration.decode(response)
         guard decoded.number == number else {
             throw SayoProtocolError.invalidPacket("Lighting v2 read returned the wrong light number")
         }
@@ -496,8 +403,7 @@ public actor SayoDeviceService {
         guard let number = UInt8(exactly: slot.number) else {
             throw SayoProtocolError.invalidPacket("named-slot number is outside the UInt8 range")
         }
-        let encodedName = Array(slot.name.utf8.prefix(32))
-        let padded = encodedName + [UInt8](repeating: 0, count: 32 - encodedName.count)
+        let padded = SayoSlotFormat.script.encode(slot.name)
         let response = try transact(SayoPacket(command: command, payload: [1, number] + padded))
         guard response.command == 0 else {
             throw SayoProtocolError.deviceRejected(command: command, code: response.command)
@@ -523,8 +429,8 @@ public actor SayoDeviceService {
         guard let number = UInt8(exactly: slot.number) else {
             throw SayoProtocolError.invalidPacket("password-slot number is outside the UInt8 range")
         }
-        let encoded = Array(slot.name.utf8.prefix(57))
-        let response = try transact(SayoPacket(command: 0x0B, payload: [1, number] + encoded + [0]))
+        let encoded = SayoSlotFormat.password.encode(slot.name)
+        let response = try transact(SayoPacket(command: 0x0B, payload: [1, number] + encoded))
         guard response.command == 0 else {
             throw SayoProtocolError.deviceRejected(command: 0x0B, code: response.command)
         }
@@ -602,12 +508,11 @@ public actor SayoDeviceService {
         _ configuration: SayoLightingV2Configuration
     ) throws -> SayoLightingV2Configuration {
         _ = try requireSelectedDevice()
-        let payload = [1, configuration.number, configuration.mode] + configuration.values
-        let response = try transact(SayoPacket(command: 0x10, payload: payload))
+        let response = try transact(configuration.writePacket())
         guard response.command == 0 else {
             throw SayoProtocolError.deviceRejected(command: 0x10, code: response.command)
         }
-        let echoed = try decodeLightingV2(response)
+        let echoed = try SayoLightingV2Configuration.decode(response)
         guard echoed == configuration else {
             throw SayoProtocolError.invalidPacket("Lighting v2 write response did not echo the requested values")
         }
@@ -634,17 +539,6 @@ public actor SayoDeviceService {
         ])
     }
 
-    private func decodeLightingV2(_ response: SayoPacket) throws -> SayoLightingV2Configuration {
-        guard response.payload.count >= 3 else {
-            throw SayoProtocolError.invalidPacket("Lighting v2 response is shorter than three bytes")
-        }
-        return SayoLightingV2Configuration(
-            number: response.payload[1],
-            mode: response.payload[2],
-            values: Array(response.payload.dropFirst(3))
-        )
-    }
-
     private func decodeUTF16CString(_ bytes: [UInt8]) -> String {
         var units: [UInt16] = []
         var index = 0
@@ -659,10 +553,6 @@ public actor SayoDeviceService {
 
     private func transact(_ packet: SayoPacket, boundTo identity: DeviceIdentity? = nil) throws -> SayoPacket {
         try transport.transact(packet, boundTo: requireSelectedDevice(identity))
-    }
-
-    private func findDevice() throws -> DeviceIdentity {
-        try transport.findDevice()
     }
 
     private func requireSelectedDevice(_ identity: DeviceIdentity? = nil) throws -> DeviceIdentity {

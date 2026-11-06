@@ -2,13 +2,13 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
-    @AppStorage("activityRefreshInterval") private var refreshInterval = 15.0
-    @AppStorage("codexStatusLampEnabled") private var codexStatusLampEnabled = true
+    @AppStorage(StudioPreferences.activityRefreshIntervalKey) private var refreshInterval = StudioPreferences.defaultActivityRefreshInterval
+    @AppStorage(StudioPreferences.statusLampEnabledKey) private var codexStatusLampEnabled = StudioPreferences.defaultStatusLampEnabled
 
     var body: some View {
         Form {
             Section("Codex activity") {
-                Slider(value: $refreshInterval, in: 5 ... 60, step: 5) {
+                Slider(value: $refreshInterval, in: StudioPreferences.minimumActivityRefreshInterval ... StudioPreferences.maximumActivityRefreshInterval, step: 5) {
                     Text("Refresh every \(refreshInterval, specifier: "%.0f") seconds")
                 }
                 Text("Refresh every \(refreshInterval, specifier: "%.0f") seconds")

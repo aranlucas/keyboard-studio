@@ -275,3 +275,22 @@ struct HyperdeckGestureRecognizerTests {
         #expect(outside.handle(event(.right, .up, at: 1.4)) == [.leftThenRight])
     }
 }
+
+struct SayoTextRecordTests {
+    // Firmware records terminate at a zero pair and accept both raw and padded bytes.
+    @Test func decodesMixedPairsAndStopsAtTerminator() {
+        let record = SayoIndexedRecord(number: 0, mode: 0, values: [0, 65, 66, 67, 0, 0, 0, 68])
+        #expect(record.textValue == "ABC")
+    }
+
+    @Test func editsBoundTextAndPreserveOpaqueSuffix() {
+        var record = SayoIndexedRecord(number: 3, mode: 7, values: [UInt8](repeating: 0, count: 56) + [0xA5])
+        record.textValue = String(repeating: "A", count: 29)
+        #expect(record.values == Array(repeating: [UInt8(0), 65], count: 28).flatMap { $0 } + [0xA5])
+        #expect(record.textValue == String(repeating: "A", count: 28))
+        record.textValue = "B"
+        #expect(Array(record.values.prefix(4)) == [0, 66, 0, 0])
+        #expect(record.values.last == 0xA5)
+        #expect(record.number == 3 && record.mode == 7)
+    }
+}

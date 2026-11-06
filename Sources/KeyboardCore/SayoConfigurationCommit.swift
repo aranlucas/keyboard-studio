@@ -27,7 +27,6 @@ public struct SayoConfigurationPlan: Equatable, Sendable {
         self.deviceName = deviceName
     }
 
-    // Validate every record before even restoring the transient lamp.
     func validate() throws {
         guard buttons.count <= 16 else {
             throw SayoProtocolError.invalidPacket("button count must not exceed sixteen")
@@ -39,7 +38,7 @@ public struct SayoConfigurationPlan: Equatable, Sendable {
             guard (9 ... 57).contains(light.values.count) else {
                 throw SayoProtocolError.invalidPacket("Lighting v2 record must contain nine to 57 value bytes")
             }
-            _ = try SayoPacket(command: 0x10, payload: [1, light.number, light.mode] + light.values).encoded()
+            _ = try light.writePacket().encoded()
         }
         for (command, records) in [(UInt8(0x11), colorTables), (UInt8(0x0C), strings)] {
             try unique(records.map(\.number))

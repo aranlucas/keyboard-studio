@@ -36,7 +36,6 @@ do {
         _ = try SayoPacket.decode(corrupt)
         throw CheckFailure.failed("corrupt checksum was accepted")
     } catch is SayoProtocolError {
-        // Expected.
     }
 
     let observedFirmwareResponse: [UInt8] = [

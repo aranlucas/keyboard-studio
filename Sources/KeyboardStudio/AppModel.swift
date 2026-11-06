@@ -149,7 +149,7 @@ final class AppModel: ObservableObject {
         extendedDeviceConfiguration[keyPath: keyPath] = value
     }
 
-    private let deviceService = SayoDeviceService()
+    private let deviceService: SayoDeviceService
     private let activityService = CodexActivityService()
     private var latestActivityTimestamp: Int64?
     private var hasLoadedActivities = false
@@ -169,7 +169,8 @@ final class AppModel: ObservableObject {
         category: "CodexDeckInput"
     )
 
-    init() {
+    init(deviceService: SayoDeviceService = SayoDeviceService(), startsAutomatically: Bool = true) {
+        self.deviceService = deviceService
         hyperdeck = HyperdeckController()
         editableButtons = Self.fallbackButtons
         if UserDefaults.standard.object(forKey: StudioPreferences.statusLampEnabledKey) == nil {
@@ -177,8 +178,10 @@ final class AppModel: ObservableObject {
         }
         configureHyperdeck()
         HyperdeckIntentBridge.install(controller: hyperdeck)
-        Task { [weak self] in
-            await self?.start()
+        if startsAutomatically {
+            Task { [weak self] in
+                await self?.start()
+            }
         }
     }
 

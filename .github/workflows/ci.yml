@@ -61,7 +61,7 @@ jobs:
       - name: Confirm split-event and Unicode-name defects
         run: |
           swift build --build-tests
-          for regression in splitCompletionAcrossPollsUpdatesLifecycleCache deviceNameRoundTripsUTF16; do
+          for regression in splitCompletionAcrossPollsUpdatesLifecycleCache deviceNameRoundTripsUTF16 releasingOneChordKeyPreventsBothHold; do
             if swift test --skip-build --filter "$regression" > "$RUNNER_TEMP/$regression.log" 2>&1; then
               cat "$RUNNER_TEMP/$regression.log"
               echo "Expected baseline regression failure: $regression"

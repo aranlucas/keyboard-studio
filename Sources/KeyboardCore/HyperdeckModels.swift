@@ -112,6 +112,7 @@ public struct HyperdeckGestureRecognizer: Sendable {
     private var emittedHolds: Set<HyperdeckKey> = []
     private var chordStartedAt: TimeInterval?
     private var chordWasEmitted = false
+    private var chordHoldEligible = false
     private var pendingTap: (key: HyperdeckKey, releasedAt: TimeInterval)?
 
     public init(timing: HyperdeckGestureTiming = .init()) {
@@ -140,16 +141,18 @@ public struct HyperdeckGestureRecognizer: Sendable {
             {
                 chordStartedAt = min(event.timestamp, otherDown)
                 chordWasEmitted = false
+                chordHoldEligible = true
                 pendingTap = nil
             }
 
         case .up:
             guard let pressedAt = downSince.removeValue(forKey: event.key) else { return gestures }
 
-            if let chordStartedAt {
+            if chordStartedAt != nil {
+                chordHoldEligible = false
                 if downSince.isEmpty {
                     if !chordWasEmitted {
-                        gestures.append(event.timestamp - chordStartedAt >= timing.bothHoldThreshold ? .bothHold : .bothTap)
+                        gestures.append(.bothTap)
                     }
                     self.chordStartedAt = nil
                     chordWasEmitted = false
@@ -187,7 +190,7 @@ public struct HyperdeckGestureRecognizer: Sendable {
         var gestures: [HyperdeckGesture] = []
 
         if let chordStartedAt,
-           !chordWasEmitted,
+           chordHoldEligible, !chordWasEmitted,
            timestamp - chordStartedAt >= timing.bothHoldThreshold
         {
             gestures.append(.bothHold)
@@ -216,7 +219,7 @@ public struct HyperdeckGestureRecognizer: Sendable {
     public var nextDeadline: TimeInterval? {
         var deadlines: [TimeInterval] = []
 
-        if let chordStartedAt, !chordWasEmitted {
+        if let chordStartedAt, chordHoldEligible, !chordWasEmitted {
             deadlines.append(chordStartedAt + timing.bothHoldThreshold)
         } else if chordStartedAt == nil {
             deadlines.append(contentsOf: downSince.compactMap { key, pressedAt in
@@ -235,6 +238,7 @@ public struct HyperdeckGestureRecognizer: Sendable {
         emittedHolds.removeAll()
         chordStartedAt = nil
         chordWasEmitted = false
+        chordHoldEligible = false
         pendingTap = nil
     }
 }

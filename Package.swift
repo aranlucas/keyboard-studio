@@ -14,6 +14,7 @@ let hardwareTargets: [Target] = [
         .linkedFramework("Carbon"), .linkedFramework("UserNotifications"),
     ]),
     .executableTarget(name: "SayoProbe", dependencies: ["KeyboardCore"]),
+    .testTarget(name: "KeyboardStudioTests", dependencies: ["KeyboardStudio", "KeyboardCore"]),
 ]
 let hardwareProducts: [Product] = [
     .executable(name: "KeyboardStudio", targets: ["KeyboardStudio"]),

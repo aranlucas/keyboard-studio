@@ -294,3 +294,16 @@ struct SayoTextRecordTests {
         #expect(record.number == 3 && record.mode == 7)
     }
 }
+
+struct ReliabilityGestureTests {
+    @Test
+    func releasingOneChordKeyPreventsBothHold() {
+        var recognizer = HyperdeckGestureRecognizer()
+        #expect(recognizer.handle(.init(key: .left, phase: .down, timestamp: 0)).isEmpty)
+        #expect(recognizer.handle(.init(key: .right, phase: .down, timestamp: 0.04)).isEmpty)
+        #expect(recognizer.handle(.init(key: .left, phase: .up, timestamp: 0.1)).isEmpty)
+        #expect(recognizer.nextDeadline == nil)
+        #expect(recognizer.flush(at: 2).isEmpty)
+        #expect(recognizer.handle(.init(key: .right, phase: .up, timestamp: 2.1)) == [.bothTap])
+    }
+}

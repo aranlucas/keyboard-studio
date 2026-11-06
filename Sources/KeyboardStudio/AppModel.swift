@@ -149,7 +149,7 @@ final class AppModel: ObservableObject {
         extendedDeviceConfiguration[keyPath: keyPath] = value
     }
 
-    private let deviceService = SayoDeviceService()
+    private let deviceService: SayoDeviceService
     private let activityService = CodexActivityService()
     private var latestActivityTimestamp: Int64?
     private var hasLoadedActivities = false
@@ -169,7 +169,8 @@ final class AppModel: ObservableObject {
         category: "CodexDeckInput"
     )
 
-    init() {
+    init(deviceService: SayoDeviceService = SayoDeviceService(), startsAutomatically: Bool = true) {
+        self.deviceService = deviceService
         hyperdeck = HyperdeckController()
         editableButtons = Self.fallbackButtons
         if UserDefaults.standard.object(forKey: StudioPreferences.statusLampEnabledKey) == nil {
@@ -177,8 +178,10 @@ final class AppModel: ObservableObject {
         }
         configureHyperdeck()
         HyperdeckIntentBridge.install(controller: hyperdeck)
-        Task { [weak self] in
-            await self?.start()
+        if startsAutomatically {
+            Task { [weak self] in
+                await self?.start()
+            }
         }
     }
 
@@ -207,6 +210,12 @@ final class AppModel: ObservableObject {
         guard !isLoadingDevice, !isSaving else { return }
         isLoadingDevice = true
         defer { isLoadingDevice = false }
+
+        // Explicit refresh discards staged state, including secrets and export
+        // consent, before a different device or a failed read can reuse it.
+        extendedDeviceConfiguration = ExtendedDeviceConfiguration()
+        secretsAreLoaded = false
+        includeSecretsInBackup = false
 
         let accessStatus = await deviceService.accessStatus()
         if keyboardAccessStatus != accessStatus {
@@ -818,7 +827,7 @@ final class AppModel: ObservableObject {
     }
 
     private func loadExtendedConfiguration(for snapshot: SayoDeviceSnapshot) async {
-        var loadedConfiguration = extendedDeviceConfiguration
+        var loadedConfiguration = ExtendedDeviceConfiguration()
         do {
             if snapshot.supportedCommands.contains(0x10) {
                 var lights: [SayoLightingV2Configuration] = []

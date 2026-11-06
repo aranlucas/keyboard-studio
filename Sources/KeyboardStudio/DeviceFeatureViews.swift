@@ -95,7 +95,7 @@ private struct LightingCard: View {
                 }
                 Stepper("On hold · \(valueBinding(6).wrappedValue)", value: valueBinding(6), in: 0 ... 255)
                 Stepper("Off hold · \(valueBinding(7).wrappedValue)", value: valueBinding(7), in: 0 ... 255)
-                Stepper("Palette · \(valueBinding(8).wrappedValue + 1)", value: valueBinding(8), in: 0 ... 5)
+                Stepper("Palette · \(Int(valueBinding(8).wrappedValue) + 1)", value: valueBinding(8), in: 0 ... 5)
                 DisclosureGroup("Raw record") {
                     Text(configuration.wrappedValue.values.map { String(format: "%02X", $0) }.joined(separator: " "))
                         .font(.caption.monospaced())

@@ -343,7 +343,7 @@ public actor SayoDeviceService {
         guard response.command == 0 else {
             throw SayoProtocolError.deviceRejected(command: 0x08, code: response.command)
         }
-        let bytes = Array(response.payload.drop { $0 == 0 && response.payload.first == 0 })
+        let bytes = Array(response.payload.dropFirst())
         return decodeUTF16CString(bytes)
     }
 

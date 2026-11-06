@@ -72,7 +72,7 @@ jobs:
           done
       - name: Upload baseline reproduction evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: audit-baseline-regressions
           path: ${{ runner.temp }}/*.log

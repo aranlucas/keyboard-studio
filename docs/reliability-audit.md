@@ -41,3 +41,7 @@ Implementation note: the SQLite fixture also covers an empty table. sqlite3 emit
 The app now has a macOS-only Swift Testing target. Its denied-access transport exercises an actual failed refresh after seeding previous-device settings and secret consent; no HID, hotkey registration or app startup tasks run. An internal initializer seam preserves default app startup behavior.
 
 7. **High confidence, medium impact — palette label overflows on imported byte 255.** LightingCard adds 1 to UInt8 to display a one-based palette. Backup/raw lighting preserves arbitrary firmware bytes, so a structurally valid imported record with value[8] == 255 crashes rendering. Convert to Int for presentation arithmetic; existing stored byte and editable control range remain unchanged. This one-line presentation fix is statically verified; no implementation-mirroring test was added.
+
+## Review and CI tracking
+
+Independent reviewer approved `fce7eb7` by static inspection after challenging findings and identifying refresh isolation, probe selection, continuous chord holds, and palette overflow. No local tests/builds ran. PR: https://github.com/aranlucas/keyboard-studio/pull/14. CI run 42301766319 baseline job was rejected before execution because repository policy requires full-SHA action pins. The artifact action is now pinned to its published v4 commit; replacement CI is pending. No passing test claim or merge yet.

@@ -208,6 +208,12 @@ final class AppModel: ObservableObject {
         isLoadingDevice = true
         defer { isLoadingDevice = false }
 
+        // Explicit refresh discards staged state, including secrets and export
+        // consent, before a different device or a failed read can reuse it.
+        extendedDeviceConfiguration = ExtendedDeviceConfiguration()
+        secretsAreLoaded = false
+        includeSecretsInBackup = false
+
         let accessStatus = await deviceService.accessStatus()
         if keyboardAccessStatus != accessStatus {
             keyboardAccessStatus = accessStatus
@@ -818,7 +824,7 @@ final class AppModel: ObservableObject {
     }
 
     private func loadExtendedConfiguration(for snapshot: SayoDeviceSnapshot) async {
-        var loadedConfiguration = extendedDeviceConfiguration
+        var loadedConfiguration = ExtendedDeviceConfiguration()
         do {
             if snapshot.supportedCommands.contains(0x10) {
                 var lights: [SayoLightingV2Configuration] = []

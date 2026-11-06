@@ -82,28 +82,38 @@ public actor CodexActivityService {
             "SELECT thread_id, summary, compact_summary, updated_at FROM thread_turn_summaries ORDER BY updated_at DESC LIMIT \(safeLimit);",
         ]
 
-        let standardOutput = Pipe()
-        let standardError = Pipe()
-        process.standardOutput = standardOutput
-        process.standardError = standardError
-
+        // Files avoid pipe backpressure while sqlite3 runs. Keep summaries private
+        // and remove both output and diagnostics on every exit path.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let outputURL = directory.appendingPathComponent("output")
+            let errorURL = directory.appendingPathComponent("error")
+            for url in [outputURL, errorURL] {
+                guard FileManager.default.createFile(atPath: url.path, contents: nil,
+                                                     attributes: [.posixPermissions: 0o600]) else {
+                    throw CodexActivityError.queryFailed("Could not create private query output")
+                }
+            }
+            let output = try FileHandle(forWritingTo: outputURL)
+            defer { try? output.close() }
+            let diagnostics = try FileHandle(forWritingTo: errorURL)
+            defer { try? diagnostics.close() }
+            process.standardOutput = output
+            process.standardError = diagnostics
             try process.run()
             process.waitUntilExit()
-        } catch {
-            throw CodexActivityError.queryFailed(error.localizedDescription)
-        }
-
-        let errorData = standardError.fileHandleForReading.readDataToEndOfFile()
-        guard process.terminationStatus == 0 else {
-            throw CodexActivityError.queryFailed(String(decoding: errorData, as: UTF8.self))
-        }
-
-        let data = standardOutput.fileHandleForReading.readDataToEndOfFile()
-        do {
+            guard process.terminationStatus == 0 else {
+                throw CodexActivityError.queryFailed(String(decoding: try Data(contentsOf: errorURL), as: UTF8.self))
+            }
+            let data = try Data(contentsOf: outputURL)
+            // sqlite3 emits no JSON for an empty result set.
+            if data.isEmpty { return [] }
             return try JSONDecoder().decode([CodexActivity].self, from: data)
         } catch {
-            throw CodexActivityError.queryFailed("Unexpected sqlite3 JSON: \(error.localizedDescription)")
+            throw CodexActivityError.queryFailed(error.localizedDescription)
         }
     }
 
@@ -219,23 +229,8 @@ public actor CodexActivityService {
             return cached.event
         }
 
-        if let cached = lifecycleCache[cacheKey], cached.identity == identity,
-           endOffset > cached.fileSize {
-            do {
-                try handle.seek(toOffset: cached.fileSize)
-                let appendedData = try handle.readToEnd() ?? Data()
-                let event = Self.decodeLastLifecycleEvent(from: appendedData) ?? cached.event
-                lifecycleCache[cacheKey] = LifecycleCacheEntry(
-                    identity: identity,
-                    modifiedAt: modifiedAt,
-                    fileSize: endOffset,
-                    event: event
-                )
-                return event
-            } catch {
-            }
-        }
-
+        // A writer can split a JSONL record across polls. Scan from the tail
+        // again on growth so the old EOF never becomes a false line boundary.
         let event = Self.scanBackwardForLifecycleEvent(handle: handle, endOffset: endOffset)
         lifecycleCache[cacheKey] = LifecycleCacheEntry(
             identity: identity,

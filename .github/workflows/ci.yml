@@ -43,3 +43,36 @@ jobs:
 
           - name: Test, build release, and run protocol assertions
             run: swift test && swift build -c release && swift run -c release protocol-check
+
+  regression-baseline:
+    name: Prove audit regressions on pre-fix baseline
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Apply regression tests to audited baseline
+        run: |
+          git diff e676e65555366958fa08e55d20d6681771e37e56 HEAD -- Tests/KeyboardCoreTests > "$RUNNER_TEMP/regressions.patch"
+          git checkout --detach e676e65555366958fa08e55d20d6681771e37e56
+          git apply "$RUNNER_TEMP/regressions.patch"
+      - name: Confirm split-event and Unicode-name defects
+        run: |
+          swift build --build-tests
+          for regression in splitCompletionAcrossPollsUpdatesLifecycleCache deviceNameRoundTripsUTF16; do
+            if swift test --skip-build --filter "$regression" > "$RUNNER_TEMP/$regression.log" 2>&1; then
+              cat "$RUNNER_TEMP/$regression.log"
+              echo "Expected baseline regression failure: $regression"
+              exit 1
+            fi
+            cat "$RUNNER_TEMP/$regression.log"
+            grep -q 'Expectation failed\|Caught error' "$RUNNER_TEMP/$regression.log"
+          done
+      - name: Upload baseline reproduction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-baseline-regressions
+          path: ${{ runner.temp }}/*.log

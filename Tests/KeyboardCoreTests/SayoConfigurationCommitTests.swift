@@ -157,6 +157,17 @@ struct SayoConfigurationCommitTests {
         return (service, try await service.readSnapshot())
     }
 
+    // UTF-16LE low zero bytes are content, not response-header padding.
+    @Test(arguments: ["ĀPad", "", "😀Pad", "Pad"])
+    func deviceNameRoundTripsUTF16(_ name: String) async throws {
+        let transport = ScriptedHID()
+        let (service, snapshot) = try await selected(transport)
+        let result = try await service.commitConfiguration(SayoConfigurationPlan(deviceName: name), expectedDevice: snapshot)
+        #expect(result.verified.deviceName == name)
+        #expect(try await service.readDeviceName() == name)
+        #expect(transport.inspect().flashes.count == 1)
+    }
+
     @Test(arguments: [
         SayoConfigurationPlan(lighting: [SayoLightingV2Configuration(number: 0, mode: 0, values: [])]),
         SayoConfigurationPlan(lighting: [light(0, 30), light(0, 40)]),

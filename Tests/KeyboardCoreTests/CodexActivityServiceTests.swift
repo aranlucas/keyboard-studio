@@ -8,6 +8,63 @@ import Glibc
 @testable import KeyboardCore
 
 struct CodexActivityServiceTests {
+    // A completion written in pieces must replace the cached started status.
+    @Test
+    func splitCompletionAcrossPollsUpdatesLifecycleCache() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sessions = home.appendingPathComponent(".codex/sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let rollout = sessions.appendingPathComponent("split.jsonl")
+        try Data(#"{"type":"event_msg","payload":{"type":"task_started","started_at":1000}}"#.utf8)
+            .write(to: rollout)
+        let handle = try FileHandle(forWritingTo: rollout)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("\n".utf8))
+        let service = CodexActivityService(homeDirectory: home)
+        #expect(await service.runtimeStatus().activeTaskCount == 1)
+        try handle.write(contentsOf: Data(#"{"type":"event_msg","payload":{"type":"task_complete","completed_"#.utf8))
+        #expect(await service.runtimeStatus().activeTaskCount == 1)
+        try handle.write(contentsOf: Data(#"at":1001}}"#.utf8))
+        let after = await service.runtimeStatus()
+        #expect(after.activeTaskCount == 0)
+        #expect(after.lastCompletedAt == 1001)
+    }
+
+    // Real sqlite3, fixture-only database: exercise output larger than pipe capacity
+    // and the empty-result convention without using any local Codex database.
+    @Test
+    func recentReadsLargeSummariesAndEmptyDatabase() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let directory = home.appendingPathComponent(".codex/sqlite")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let service = CodexActivityService(homeDirectory: home)
+        let sql = directory.appendingPathComponent("fixture.sql")
+        func apply(_ statement: String) throws {
+            try Data(statement.utf8).write(to: sql)
+            let input = try FileHandle(forReadingFrom: sql)
+            defer { try? input.close() }
+            let process = Process()
+            process.executableURL = URL(filePath: "/usr/bin/sqlite3")
+            process.arguments = [service.databaseURL.path]
+            process.standardInput = input
+            try process.run()
+            process.waitUntilExit()
+            try #require(process.terminationStatus == 0)
+        }
+        try apply("CREATE TABLE thread_turn_summaries(thread_id TEXT, summary TEXT, compact_summary TEXT, updated_at INTEGER);")
+        #expect(try await service.recent().isEmpty)
+        let summary = String(repeating: "x", count: 1_048_576)
+        try apply("INSERT INTO thread_turn_summaries VALUES ('fixture', '\(summary)', NULL, 1000);")
+        let activities = try await service.recent()
+        #expect(activities.count == 1)
+        #expect(activities.first?.threadID == "fixture")
+        #expect(activities.first?.summary == summary)
+        #expect(activities.first?.updatedAt == 1000)
+    }
+
     @Test
     func sameSizeRolloutReplacementInvalidatesLifecycleCache() async throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -12,6 +12,7 @@ struct SayoProbe {
                 try printJSON(status)
                 return
             }
+            var snapshot = try await service.readSnapshot()
             if arguments.contains("--read-lighting-v2") {
                 var lighting: [SayoLightingV2Configuration] = []
                 for number in UInt8(0) ..< UInt8(8) {
@@ -106,7 +107,6 @@ struct SayoProbe {
                 try printJSON(echoed)
                 return
             }
-            var snapshot = try await service.readSnapshot()
             if CommandLine.arguments.contains("--install-codex-deck") {
                 let configured = try CodexDeckProfile.applying(to: snapshot.buttons)
                 _ = try await service.writeAndSave(buttons: configured)

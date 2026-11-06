@@ -233,7 +233,6 @@ public actor CodexActivityService {
                 )
                 return event
             } catch {
-                // Fall through to a complete backward scan.
             }
         }
 

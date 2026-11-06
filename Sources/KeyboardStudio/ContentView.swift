@@ -2,41 +2,11 @@ import KeyboardCore
 import SwiftUI
 import UserNotifications
 
-enum StudioSection: String, CaseIterable, Identifiable {
-    case keyboard = "Keyboard"
-    case lighting = "Lighting"
-    case macros = "Text & Passwords"
-    case scripts = "Scripts"
-    case device = "Device"
-    case backups = "Backup & Restore"
-    case hyperdeck = "Hyperdeck"
-    case codexDeck = "Codex Deck"
-    case activity = "Codex Activity"
-    case protocolInfo = "Protocol"
-
-    var id: String { rawValue }
-
-    var icon: String {
-        switch self {
-        case .keyboard: "keyboard"
-        case .lighting: "lightbulb.led.fill"
-        case .macros: "text.cursor"
-        case .scripts: "chevron.left.forwardslash.chevron.right"
-        case .device: "gearshape.2.fill"
-        case .backups: "externaldrive.fill.badge.timemachine"
-        case .hyperdeck: "rectangle.2.swap"
-        case .codexDeck: "sparkles.rectangle.stack.fill"
-        case .activity: "bell.badge"
-        case .protocolInfo: "cable.connector"
-        }
-    }
-}
-
 struct ContentView: View {
     let model: AppModel
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) private var openWindow
-    @AppStorage("selectedStudioSection") private var selectedSectionRaw = StudioSection.keyboard.rawValue
+    @AppStorage(StudioPreferences.selectedSectionKey) private var selectedSectionRaw = StudioSection.keyboard.rawValue
 
     private var selectedSection: StudioSection {
         StudioSection(rawValue: selectedSectionRaw) ?? .keyboard
@@ -118,7 +88,7 @@ private struct CodexSidebarBadge: View {
 
 private struct CodexDeckView: View {
     @ObservedObject var model: AppModel
-    @AppStorage("codexStatusLampEnabled") private var codexStatusLampEnabled = true
+    @AppStorage(StudioPreferences.statusLampEnabledKey) private var codexStatusLampEnabled = StudioPreferences.defaultStatusLampEnabled
 
     var body: some View {
         ScrollView {
@@ -699,7 +669,7 @@ private struct RawByteField: View {
 
 private struct CodexActivityView: View {
     @ObservedObject var model: AppModel
-    @AppStorage("codexStatusLampEnabled") private var codexStatusLampEnabled = true
+    @AppStorage(StudioPreferences.statusLampEnabledKey) private var codexStatusLampEnabled = StudioPreferences.defaultStatusLampEnabled
 
     var body: some View {
         VStack(spacing: 0) {

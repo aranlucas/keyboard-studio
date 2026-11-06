@@ -371,6 +371,8 @@ public struct HyperdeckProfile: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct HyperdeckConfiguration: Codable, Equatable, Sendable {
+    public static let formatIdentifier = "Keyboard Studio Hyperdeck 1.0"
+
     public var format: String
     public var timing: HyperdeckGestureTiming
     public var recipes: [HyperdeckRecipe]
@@ -385,7 +387,7 @@ public struct HyperdeckConfiguration: Codable, Equatable, Sendable {
         focusMinutes: Int = 25,
         clipboardMonitoringEnabled: Bool = false
     ) {
-        format = "Keyboard Studio Hyperdeck 1.0"
+        format = Self.formatIdentifier
         self.timing = timing
         self.recipes = recipes
         self.profiles = profiles

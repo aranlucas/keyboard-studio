@@ -100,6 +100,8 @@ final class HyperdeckController: ObservableObject {
     private var lastPasteboardChangeCount = NSPasteboard.general.changeCount
     private var hasStarted = false
 
+    private let defaults: UserDefaults
+
     private static let configurationKey = "hyperdeckConfigurationV1"
     private static let logger = Logger(subsystem: "com.lucas.keyboardstudio", category: "Hyperdeck")
     private static let blockedInterpreterNames: Set<String> = [
@@ -110,10 +112,11 @@ final class HyperdeckController: ObservableObject {
     ]
 
     init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         let loadedConfiguration: HyperdeckConfiguration
         if let data = defaults.data(forKey: Self.configurationKey),
            let decoded = try? JSONDecoder().decode(HyperdeckConfiguration.self, from: data),
-           decoded.format == "Keyboard Studio Hyperdeck 1.0"
+           decoded.format == HyperdeckConfiguration.formatIdentifier
         {
             loadedConfiguration = decoded
         } else {
@@ -551,7 +554,7 @@ final class HyperdeckController: ObservableObject {
 
     private func persistConfiguration() {
         guard let data = try? JSONEncoder().encode(configuration) else { return }
-        UserDefaults.standard.set(data, forKey: Self.configurationKey)
+        defaults.set(data, forKey: Self.configurationKey)
     }
 
     private static func isInterpreterExecutable(_ url: URL) -> Bool {

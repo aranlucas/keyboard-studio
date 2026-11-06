@@ -45,3 +45,5 @@ The app now has a macOS-only Swift Testing target. Its denied-access transport e
 ## Review and CI tracking
 
 Independent reviewer approved `fce7eb7` by static inspection after challenging findings and identifying refresh isolation, probe selection, continuous chord holds, and palette overflow. No local tests/builds ran. PR: https://github.com/aranlucas/keyboard-studio/pull/14. CI run 42301766319 baseline job was rejected before execution because repository policy requires full-SHA action pins. The artifact action is now pinned to its published v4 commit; replacement CI is pending. No passing test claim or merge yet.
+
+CI follow-up: run 42302023176 exposed a Swift 6 isolation error in the new SQLite fixture: its synchronous setup helper accessed the actor-isolated `databaseURL`. The async test now captures that URL with `await` before calling the helper. Production behavior is unchanged; replacement CI must validate compilation and all regressions.

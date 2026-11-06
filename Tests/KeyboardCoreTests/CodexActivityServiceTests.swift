@@ -42,13 +42,14 @@ struct CodexActivityServiceTests {
         defer { try? FileManager.default.removeItem(at: home) }
         let service = CodexActivityService(homeDirectory: home)
         let sql = directory.appendingPathComponent("fixture.sql")
+        let databaseURL = await service.databaseURL
         func apply(_ statement: String) throws {
             try Data(statement.utf8).write(to: sql)
             let input = try FileHandle(forReadingFrom: sql)
             defer { try? input.close() }
             let process = Process()
             process.executableURL = URL(filePath: "/usr/bin/sqlite3")
-            process.arguments = [service.databaseURL.path]
+            process.arguments = [databaseURL.path]
             process.standardInput = input
             try process.run()
             process.waitUntilExit()
